@@ -1,17 +1,10 @@
-import torch
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
-import numpy as np
-import random
-import pickle
-from torch.nn.utils.rnn import pad_sequence
 # import argparse
-import os
-from transformers import AutoTokenizer, BertTokenizer
-import torch.nn as nn
 from util import *
-
-
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Dataset
+import os
+import pickle
+import torch
+from torch.nn.utils.rnn import pad_sequence
 
 def data_perpare(args,mode,tokenizer,data=None):
     dataset=TSNote_Irg(args,mode, tokenizer,data=data)
@@ -86,7 +79,10 @@ class TSNote_Irg(Dataset):
 
 
         ts_mask=data_detail['irg_ts_mask']
-        text = data_detail['text_data']
+        if 'text_data' not in data_detail.keys():
+            text = ""
+        else:
+            text = data_detail['text_data']
 
 
 
