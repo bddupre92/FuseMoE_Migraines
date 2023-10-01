@@ -5,6 +5,7 @@ import os
 import pickle
 import torch
 from torch.nn.utils.rnn import pad_sequence
+import pdb
 
 def data_perpare(args,mode,tokenizer,data=None):
     dataset=TSNote_Irg(args,mode, tokenizer,data=data)
@@ -27,6 +28,7 @@ def F_impute(X,tt,mask,duration,tt_max):
         if row>=tt_max:
             continue
         for  f_idx, (rwo_x, row_m) in enumerate(zip(x,m)):
+            # perform imputation according to the discretization rule in paper
             if row_m==1:
                 impute[row][no_feature+f_idx]=1
                 impute[row][f_idx]=rwo_x
@@ -72,6 +74,7 @@ class TSNote_Irg(Dataset):
             notes_order=self.notes_order
         else:
             notes_order= 'Last' if self.order_sample[idx]==1  else 'First'
+        # print('data idx', self.data[idx])
         data_detail = self.data[idx]
         idx=data_detail['name']
         reg_ts=data_detail['reg_ts']
@@ -131,6 +134,13 @@ class TSNote_Irg(Dataset):
         text_time_to_end=torch.tensor(text_time_to_end,dtype=torch.float)
         text_time_mask=torch.tensor(text_time_mask,dtype=torch.long)
 
+        # print('model type', self.modeltype)
+        # # print('idx', idx)
+        # print('notes order', notes_order)
+        # print('ts_mask', ts_mask)
+        # print('ts_tt', ts_tt)
+        # print('text_time_to_end', text_time_to_end)
+        # print('text_time_mask', text_time_mask)
         if 'Text' not in self.modeltype:
             return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"label":label}
         if notes_order=="Last":
@@ -163,9 +173,17 @@ def load_data(file_path,mode,debug=False,text=False):
 
 
 def TextTSIrgcollate_fn(batch):
-
+    # print(f'batch type {type(batch)} \n')
+    # print(batch)
+    # print(f'batch length {len(batch)} \n')
     batch = list(filter(lambda x: x is not None, batch))
+    # if len(batch) == 0:
+    #     return
+    # print(f'batch type mid {type(batch)} \n')
+    # print(f'batch length mid {len(batch)} \n')
     batch = list(filter(lambda x: len(x['ts']) <1000, batch))
+    # print(f'batch type after {type(batch)} \n')
+    # print(f'batch length after {len(batch)} \n')
     ts_input_sequences=pad_sequence([example['ts'] for example in batch],batch_first=True,padding_value=0 )
     ts_mask_sequences=pad_sequence([example['ts_mask'] for example in batch],batch_first=True,padding_value=0 )
     ts_tt=pad_sequence([example['ts_tt'] for example in batch],batch_first=True,padding_value=0 )

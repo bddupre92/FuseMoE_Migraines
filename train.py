@@ -147,8 +147,9 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,reg_ts=reg_ts)
             if torch.isnan(logits).any():
-                import pdb;
-                pdb.set_trace()
+                # import pdb;
+                # pdb.set_trace()
+                continue
             logits=logits.cpu().numpy()
             label_ids=label.cpu().numpy()
             eval_logits += logits.tolist()

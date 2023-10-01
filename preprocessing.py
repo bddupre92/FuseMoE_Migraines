@@ -9,7 +9,7 @@ import json
 import statistics as stat
 import sys
 from pathlib import Path
-sys.path.append('../mimic3-benchmarks')
+sys.path.append('/scratch4/ssaria1/xhan56/mimic3-benchmarks-new')
 
 from mimic3benchmark.readers import InHospitalMortalityReader,PhenotypingReader
 from mimic3models import common_utils
@@ -360,11 +360,11 @@ def merge_text_ts(textdict, timedict, start_times,tslist,period_length,dataPath_
 
 
 if __name__ == "__main__":
-    dir_input="../mimic3-benchmarks/"
+    dir_input="../mimic3-benchmarks-new/"
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, help='Path to the data of task',
-                        default=os.path.join(os.path.dirname(__file__), '../mimic3-benchmarks/data/in-hospital-mortality/')) #'../mimic3-benchmarks/data/phenotyping/'
+                        default=os.path.join(os.path.dirname(__file__), '/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/data/in-hospital-mortality/')) #'../mimic3-benchmarks/data/phenotyping/'
     parser.add_argument("--period_length", default=48, type=int, help="period length of reader.") #24
     parser.add_argument("--task", default='ihm', type=str, help="task name to create data")
     parser.add_argument("--outputdir", default='./Data/', type=str, help="data output dir") #'./Data/pheno/'
@@ -417,7 +417,7 @@ if __name__ == "__main__":
     cont_channels = [i for (i, x) in enumerate(discretizer_header) if x.find("->") == -1]
     
     normalizer = Normalizer(fields=cont_channels)  # choose here which columns to standardize
-    normalizer_state = '../mimic3-benchmarks/mimic3models/in_hospital_mortality/ihm_ts{}.input_str:{}.start_time:zero.normalizer'.format(args.timestep, args.imputation)
+    normalizer_state = '/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/mimic3models/in_hospital_mortality/ihm_ts{}.input_str-{}.start_time-zero.normalizer'.format(args.timestep, args.imputation)
     normalizer_state = os.path.join(os.path.dirname(__file__), normalizer_state)
     normalizer.load_params(normalizer_state)
 
@@ -438,10 +438,10 @@ if __name__ == "__main__":
                   output_dir+'norm_ts_'+mode+'.pkl',\
                    output_dir+'mean_std.pkl')
 
-    textdata_fixed = "../mimic3-benchmarks/data/root/text_fixed/"
-    starttime_path = "../mimic3-benchmarks/starttime.pkl"
-    test_textdata_fixed = "../mimic3-benchmarks/data/root/test_text_fixed/"
-    test_starttime_path = "../mimic3-benchmarks/test_starttime.pkl"
+    textdata_fixed = "/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/data/root/text_fixed/"
+    starttime_path = "/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/starttime.pkl"
+    test_textdata_fixed = "/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/data/root/test_text_fixed/"
+    test_starttime_path = "/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/test_starttime.pkl"
 
     
     for mode in ['train', 'val', 'test']:
