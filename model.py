@@ -343,7 +343,7 @@ class MULTCrossModel(nn.Module):
                 proj_x_txt = proj_x_txt.permute(2, 0, 1)
         if self.cross_method=="self_cross":
             # input to multimodal fusion module: proj_x_txt, proj_x_ts
-            pdb.set_trace()
+            # pdb.set_trace()
             hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
             h_txt_with_ts, h_ts_with_txt=hiddens
             last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)

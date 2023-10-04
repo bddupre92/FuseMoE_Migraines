@@ -173,23 +173,18 @@ def load_data(file_path,mode,debug=False,text=False):
 
 
 def TextTSIrgcollate_fn(batch):
-    # print(f'batch type {type(batch)} \n')
-    # print(batch)
-    # print(f'batch length {len(batch)} \n')
-    batch = list(filter(lambda x: x is not None, batch))
-    # if len(batch) == 0:
-    #     return
-    # print(f'batch type mid {type(batch)} \n')
-    # print(f'batch length mid {len(batch)} \n')
-    batch = list(filter(lambda x: len(x['ts']) <1000, batch))
-    # print(f'batch type after {type(batch)} \n')
-    # print(f'batch length after {len(batch)} \n')
-    ts_input_sequences=pad_sequence([example['ts'] for example in batch],batch_first=True,padding_value=0 )
-    ts_mask_sequences=pad_sequence([example['ts_mask'] for example in batch],batch_first=True,padding_value=0 )
-    ts_tt=pad_sequence([example['ts_tt'] for example in batch],batch_first=True,padding_value=0 )
-    label=torch.stack([example["label"] for example in batch])
 
-    reg_ts_input=torch.stack([example['reg_ts'] for example in batch])
+    batch = list(filter(lambda x: x is not None, batch))
+    batch = list(filter(lambda x: len(x['ts']) <1000, batch))
+    try:
+        ts_input_sequences=pad_sequence([example['ts'] for example in batch],batch_first=True,padding_value=0 )
+        ts_mask_sequences=pad_sequence([example['ts_mask'] for example in batch],batch_first=True,padding_value=0 )
+        ts_tt=pad_sequence([example['ts_tt'] for example in batch],batch_first=True,padding_value=0 )
+        label=torch.stack([example["label"] for example in batch])
+        reg_ts_input=torch.stack([example['reg_ts'] for example in batch])
+    except:
+        return 
+
     if len(batch[0])>6:
         input_ids=[pad_sequence(example['input_ids'],batch_first=True,padding_value=0).transpose(0,1) for example in batch]
         attn_mask=[pad_sequence(example['attention_mask'],batch_first=True,padding_value=0).transpose(0,1) for example in batch]

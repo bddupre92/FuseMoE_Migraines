@@ -52,8 +52,6 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
     for epoch in tqdm(range(args.num_train_epochs)):
         model.train()
         if "Text" in args.modeltype:
-            # import pdb;
-            # pdb.set_trace()
             if args.num_update_bert_epochs<args.num_train_epochs and (epoch)%args.num_update_bert_epochs==0 and count<args.bertcount:
                 count+=1
                 print("bert update at epoch "+ str(epoch) )
@@ -62,8 +60,6 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
             else:
                 for param in model.bertrep.parameters():
                     param.requires_grad = False
-        # import pdb;
-        # pdb.set_trace()
 
             for param in model.bertrep.parameters():
                 print(epoch,param.requires_grad)
@@ -72,8 +68,9 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
 
 
         for step, batch in tqdm(enumerate(train_dataloader)):
+            if batch is None:
+                continue
             global_step+=1
-
             ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time ,note_time_mask, label = batch
 
             if "Text" not in args.modeltype:
@@ -147,8 +144,6 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,reg_ts=reg_ts)
             if torch.isnan(logits).any():
-                # import pdb;
-                # pdb.set_trace()
                 continue
             logits=logits.cpu().numpy()
             label_ids=label.cpu().numpy()
@@ -158,16 +153,13 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
 
     eval_vals={}
 
-    # import pdb;
-    # pdb.set_trace()
-
     all_logits = np.array(eval_logits)
     all_label = np.array(eval_example)
     all_pred= np.where(all_logits > 0.5, 1, 0)
     if args.task=="pheno":
         eval_vals=metrics_multilabel(all_label, all_logits, verbose=0)
         eval_vals['macro_f1']=f1_score(all_label, all_pred, average='macro')
-        # import pdb; pdb.set_trace()
+
         if mode==None:
             check_point(eval_vals, model, eval_logits, args,"macro_f1")
 
