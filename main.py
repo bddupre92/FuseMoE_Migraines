@@ -64,8 +64,10 @@ def main():
 
 
     if 'Text' in args.modeltype:
+        # text and ts fusion
         model= MULTCrossModel(args=args,device=device,orig_d_ts=17, orig_reg_d_ts=34, orig_d_txt=768,ts_seq_num=args.tt_max,text_seq_num=args.num_of_notes,Biobert=BioBert)
     else:
+        # pure time series
         model= TSMixed(args=args,device=device,orig_d_ts=17,orig_reg_d_ts=34, ts_seq_num=args.tt_max)
 
     print(device)

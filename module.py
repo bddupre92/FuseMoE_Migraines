@@ -512,8 +512,7 @@ class TransformerCrossEncoder(nn.Module):
 
         """
 
-        # import pdb;
-        # pdb.set_trace()
+        # x_in_list contains ts and clinical notes tensors
         x_list=x_in_list
         length_x1 = x_list[0].size(0) # (length,Batch_size,input_dim)
         length_x2 = x_list[1].size(0)

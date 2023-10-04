@@ -6,6 +6,7 @@ import math
 from module import *
 from interp import *
 import copy
+import pdb
 class BertForRepresentation(nn.Module):
 
     def __init__(self, args,BioBert):
@@ -176,11 +177,13 @@ class MULTCrossModel(nn.Module):
         output_dim = args.num_labels
         if self.modeltype=="TS_Text":
             if self.cross_method=="self_cross":
+                # author implemented method
                 self.trans_self_cross_ts_txt=self.get_cross_network(layers=args.cross_layers)
                 self.proj1 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
             else:
+                # baseline fusion methods
                 self.trans_ts_mem = self.get_network(self_type='ts_mem', layers=args.layers)
                 self.trans_txt_mem = self.get_network(self_type='txt_mem', layers=args.layers)
 
@@ -268,8 +271,12 @@ class MULTCrossModel(nn.Module):
 
 
     def learn_time_embedding(self, tt):
+        '''
+        Time2Vec Module
+        '''
         tt = tt.to(self.device)
         tt = tt.unsqueeze(-1)
+        # only two dimension?
         out2 = torch.sin(self.periodic(tt))
         out1 = self.linear(tt)
         return torch.cat([out1, out2], -1)
@@ -282,11 +289,12 @@ class MULTCrossModel(nn.Module):
 
         """
         if "TS" in self.modeltype:
-
+            # mTAND module part
             if self.irregular_learn_emb_ts:
                 time_key_ts = self.learn_time_embedding(ts_tt_list).to(self.device)
                 time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
+                #TODO: what does ts_mask used for?
                 x_ts_irg = torch.cat((x_ts,x_ts_mask), 2)
                 x_ts_mask = torch.cat((x_ts_mask,x_ts_mask), 2)
 
@@ -299,6 +307,7 @@ class MULTCrossModel(nn.Module):
                 proj_x_ts_reg = proj_x_ts_reg.permute(2, 0, 1)
 
             if self.TS_mixup:
+                # TODO: replace self.moe with sparse gated MoE?
                 if self.mixup_level=='batch':
                     g_irg=torch.max(proj_x_ts_irg,dim=0).values
                     g_reg =torch.max(proj_x_ts_reg,dim=0).values
@@ -318,6 +327,7 @@ class MULTCrossModel(nn.Module):
                 else:
                     raise ValueError("Unknown time series type")
         if "Text" in self.modeltype:
+            # compute irregular clinical notes attention
             x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
             if self.irregular_learn_emb_text:
                 time_key = self.learn_time_embedding(note_time_list).to(self.device)
@@ -332,6 +342,8 @@ class MULTCrossModel(nn.Module):
                 proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
                 proj_x_txt = proj_x_txt.permute(2, 0, 1)
         if self.cross_method=="self_cross":
+            # input to multimodal fusion module: proj_x_txt, proj_x_ts
+            pdb.set_trace()
             hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
             h_txt_with_ts, h_ts_with_txt=hiddens
             last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)

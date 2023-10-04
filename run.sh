@@ -2,7 +2,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 for mixup_level in 'batch' 'batch_seq' 'batch_seq_feature'
 do
-python -u -W ignore main.py  --num_train_epochs 6  --modeltype 'TS_Text' \
+python -W ignore main.py  --num_train_epochs 6  --modeltype 'TS_Text' \
                 --kernel_size 1 --train_batch_size 6 --eval_batch_size 8   --seed 42 \
                 --gradient_accumulation_steps 16  --num_update_bert_epochs 2 --bertcount 3 \
                 --ts_learning_rate  0.0004 --txt_learning_rate 0.00002 \
