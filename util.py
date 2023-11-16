@@ -139,7 +139,7 @@ def parse_args():
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument("--datagereate_seed", type=int, default=42, help="A seed for reproducible data generation .")
     parser.add_argument("--TS_model", type=str, default='Atten', help="LSTM, CNN, Atten")
-    parser.add_argument("--cross_method", default='self_cross', type=str, help="baseline fusion method: MAGGate, MulT, Outer,concat")
+    parser.add_argument("--cross_method", default='moe', type=str, help="baseline fusion method: moe, self_cross, MAGGate, MulT, Outer,concat")
     args = parser.parse_args()
 
     return args

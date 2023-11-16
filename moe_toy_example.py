@@ -9,7 +9,10 @@ import torch
 from torch import nn
 from torch.optim import Adam
 import pdb
-from moe import MoE
+from config import MoETransEHRConfig
+
+from sparse_moe import MoE
+
 
 
 def train(x, y, model, loss_fn, optim):
@@ -36,9 +39,9 @@ def eval(x, y, model, loss_fn):
     print("Evaluation Results - loss: {:.2f}, aux_loss: {:.3f}".format(loss.item(), aux_loss.item()))
 
 
-def dummy_data(batch_size, input_size, num_classes):
+def dummy_data(seq_len, batch_size, input_size, num_classes):
     # dummy input
-    x = torch.rand(batch_size, input_size)
+    x = torch.rand(seq_len, batch_size, input_size)
 
     # dummy target
     y = torch.randint(num_classes, (batch_size, 1)).squeeze(1)
@@ -51,11 +54,12 @@ num_classes = 20
 num_experts = 10
 hidden_size = 64
 batch_size = 5
+seq_len = 10
 k = 4
 
 # determine device
 if torch.cuda.is_available():
-    device = torch.device('cuda')
+    device = torch.device('cuda:3')
 else:
     device = torch.device('cpu')
 
@@ -65,10 +69,10 @@ model = model.to(device)
 loss_fn = nn.CrossEntropyLoss()
 optim = Adam(model.parameters())
 
-x, y = dummy_data(batch_size, input_size, num_classes)
+x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
 
 # train
 model = train(x.to(device), y.to(device), model, loss_fn, optim)
 # evaluate
-x, y = dummy_data(batch_size, input_size, num_classes)
+x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
 eval(x.to(device), y.to(device), model, loss_fn)

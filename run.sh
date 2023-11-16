@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 for mixup_level in 'batch' 'batch_seq' 'batch_seq_feature'
 do
@@ -23,5 +23,3 @@ python -W ignore main.py  --num_train_epochs 6  --modeltype 'TS_Text' \
                 --irregular_learn_emb_ts \
                 --reg_ts
 done
-
-            

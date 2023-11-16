@@ -366,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument('--data', type=str, help='Path to the data of task',
                         default=os.path.join(os.path.dirname(__file__), '/scratch4/ssaria1/xhan56/mimic3-benchmarks-new/data/in-hospital-mortality/')) #'../mimic3-benchmarks/data/phenotyping/'
     parser.add_argument("--period_length", default=48, type=int, help="period length of reader.") #24
-    parser.add_argument("--task", default='ihm', type=str, help="task name to create data")
+    parser.add_argument("--task", default='pheno', type=str, help="task name to create data")
     parser.add_argument("--outputdir", default='./Data/', type=str, help="data output dir") #'./Data/pheno/'
     parser.add_argument('--timestep', type=float, default=1.0,
                         help="fixed timestep used in the dataset")

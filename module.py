@@ -8,11 +8,14 @@ import numpy as np
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
+from config import MoETransEHRConfig
+from sparse_moe import MoE
 import sys
+import pdb
 # Code adapted from the fairseq repo.
 
 
-class  Outer(nn.Module):
+class Outer(nn.Module):
     def __init__(self,
                  inp1_size: int = 128,
                  inp2_size: int = 128,
@@ -22,13 +25,12 @@ class  Outer(nn.Module):
         self.inp2_size = inp2_size
         self.feedforward = nn.Sequential(
             nn.Linear((inp1_size + 1) * (inp2_size + 1), n_neurons),
-            nn . ReLU (),
+            nn.ReLU(),
             nn.Linear(n_neurons, n_neurons),
-            nn . ReLU (),
+            nn.ReLU(),
         )
 
     def forward(self, inp1, inp2):
-        # import pdb; pdb.set_trace()
         batch_size = inp1.size(0)
         append = torch.ones((batch_size, 1)).type_as(inp1)
         inp1 = torch.cat([inp1, append], dim=-1)
@@ -88,6 +90,7 @@ class gateMLP(nn.Module):
         gate_logits = self.gate(hidden_states)
         return gate_logits
 
+
 class TimeSeriesCnnModel(nn.Module):
     def __init__(self,input_size,n_filters,filter_size,dropout,length,n_neurons,layers):
         super().__init__()
@@ -126,7 +129,7 @@ class TimeSeriesCnnModel(nn.Module):
 # F.gumbel_softmax(logits, tau=1, hard=True)
 
 class multiTimeAttention(nn.Module):
-
+    "mTAND module"
     def __init__(self, input_dim, nhidden=16,
                  embed_time=16, num_heads=1):
         super(multiTimeAttention, self).__init__()
@@ -159,10 +162,8 @@ class multiTimeAttention(nn.Module):
 #             p_attn = dropout(p_attn)
         return torch.sum(p_attn*value.unsqueeze(-3), -2), p_attn
 
-
     def forward(self, query, key, value, mask=None, dropout=0.1):
         "Compute 'Scaled Dot Product Attention'"
-        # import pdb; pdb.set_trace()
         batch, seq_len, dim = value.size()
         if mask is not None:
             # Same mask applied to all h heads.
@@ -174,11 +175,6 @@ class multiTimeAttention(nn.Module):
         x = x.transpose(1, 2).contiguous() \
              .view(batch, -1, self.h * dim)
         return self.linears[-1](x)
-
-
-
-
-
 
 
 class MultiheadAttention(nn.Module):
@@ -232,18 +228,16 @@ class MultiheadAttention(nn.Module):
         batch x src_len, where padding elements are indicated by 1s.
         """
 
-        # import pdb;
-        # pdb.set_trace()
         qkv_same = query.data_ptr() == key.data_ptr() == value.data_ptr()
         kv_same = key.data_ptr() == value.data_ptr()
 
+        # embed_dim can be decomposed into num_heads x head_dim?
         tgt_len, bsz, embed_dim = query.size()
         assert embed_dim == self.embed_dim
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
         assert key.size() == value.size()
 
         aved_state = None
-
         if qkv_same:
             # self-attention
             q, k, v = self.in_proj_qkv(query)
@@ -275,8 +269,8 @@ class MultiheadAttention(nn.Module):
         if v is not None:
             v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
 
+        # src_len = bsz * num_heads
         src_len = k.size(1)
-
         if self.add_zero_attn:
             src_len += 1
             k = torch.cat([k, k.new_zeros((k.size(0), 1) + k.size()[2:])], dim=1)
@@ -303,12 +297,14 @@ class MultiheadAttention(nn.Module):
         attn = torch.bmm(attn_weights, v)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
 
+        # embed_dim = self.num_heads * self.head_dim
         attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         attn = self.out_proj(attn)
 
         # average attention weights over heads
         attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
         attn_weights = attn_weights.sum(dim=1) / self.num_heads
+
         return attn, attn_weights
 
     def in_proj_qkv(self, query):
@@ -333,8 +329,6 @@ class MultiheadAttention(nn.Module):
         if bias is not None:
             bias = bias[start:end]
         return F.linear(input, weight, bias)
-
-
 
 
 class TransformerEncoder(nn.Module):
@@ -403,7 +397,6 @@ class TransformerEncoder(nn.Module):
                   padding elements of shape `(batch, src_len)`
         """
 
-
         x=x_in
         length_x = x.size(0) # (length,Batch_size,input_dim)
         x = self.embed_scale * x_in
@@ -426,7 +419,6 @@ class TransformerEncoder(nn.Module):
             x_k = F.dropout(x_k, p=self.dropout, training=self.training)
             x_v = F.dropout(x_v, p=self.dropout, training=self.training)
 
-
         # encoder layers
         intermediates = [x]
         for layer in self.layers:
@@ -447,6 +439,7 @@ class TransformerEncoder(nn.Module):
             return self.max_source_positions
         return min(self.max_source_positions, self.embed_positions.max_positions())
 
+
 class TransformerCrossEncoder(nn.Module):
     """
     Transformer encoder consisting of *args.encoder_layers* layers. Each layer
@@ -461,7 +454,7 @@ class TransformerCrossEncoder(nn.Module):
         attn_mask (bool): whether to apply mask on the attention weights
     """
 
-    def __init__(self, embed_dim, num_heads, layers, device,attn_dropout=0.0, relu_dropout=0.0, res_dropout=0.0,
+    def __init__(self, args, embed_dim, num_heads, layers, device,attn_dropout=0.0, relu_dropout=0.0, res_dropout=0.0,
                  embed_dropout=0.0, attn_mask=False,q_seq_len_1=None,q_seq_len_2=None):
         super().__init__()
         self.dropout = embed_dropout      # Embedding dropout
@@ -484,12 +477,12 @@ class TransformerCrossEncoder(nn.Module):
         else:
             self.embed_positions_q=nn.ModuleList([self.embed_positions_q_1,self.embed_positions_q_1,])
 
-
         self.attn_mask = attn_mask
 
         self.layers = nn.ModuleList([])
         for layer in range(layers):
-            new_layer = TransformerCrossEncoderLayer(embed_dim,
+            new_layer = TransformerCrossEncoderLayer(args,
+                                                embed_dim,
                                                 num_heads=num_heads,
                                                 attn_dropout=attn_dropout,
                                                 relu_dropout=relu_dropout,
@@ -513,39 +506,34 @@ class TransformerCrossEncoder(nn.Module):
         """
 
         # x_in_list contains ts and clinical notes tensors
-        x_list=x_in_list
+        print('x_in_list', x_in_list)
+        x_list = x_in_list
         length_x1 = x_list[0].size(0) # (length,Batch_size,input_dim)
         length_x2 = x_list[1].size(0)
         x_list = [ self.embed_scale * x_in for x_in in x_in_list]
         if self.q_seq_len_1 is not None:
             position_x1 = torch.tensor(torch.arange(length_x1),dtype=torch.long).to(self.device)
             position_x2 = torch.tensor(torch.arange(length_x2),dtype=torch.long).to(self.device)
-            positions=[position_x1 ,position_x2]
-            x_list=[ l(position_x).unsqueeze(0).transpose(0,1) +x for l, x,position_x in zip(self.embed_positions_q, x_list,positions)]
+            positions = [position_x1 ,position_x2]
+            x_list = [l(position_x).unsqueeze(0).transpose(0,1) + x for l, x, position_x in zip(self.embed_positions_q, x_list, positions)]
               # Add positional embedding
-        x_list[0]=F.dropout(x_list[0], p=self.dropout, training=self.training)
-        x_list[1]=F.dropout(x_list[1], p=self.dropout, training=self.training)
+        x_list[0] = F.dropout(x_list[0], p=self.dropout, training=self.training)
+        x_list[1] = F.dropout(x_list[1], p=self.dropout, training=self.training)
 
         # encoder layers
-
-        # x_low_level=None
-
-
         for layer in self.layers:
-            x_list= layer(x_list) #proj_x_txt, proj_x_ts
-
+            x_list = layer(x_list) #proj_x_txt, proj_x_ts
 
         if self.normalize:
-            x_list=[ l(x)  for l, x in zip(self.layer_norm, x_list)]
+            x_list=[l(x) for l, x in zip(self.layer_norm, x_list)]
         return x_list
 
 
-
-
 class TransformerCrossEncoderLayer(nn.Module):
-    def __init__(self, embed_dim, num_heads=4, attn_dropout=0.1, relu_dropout=0.1, res_dropout=0.1,
+    def __init__(self, args, embed_dim, num_heads=4, attn_dropout=0.1, relu_dropout=0.1, res_dropout=0.1,
                      attn_mask=False):
         super().__init__()
+        self.args = args
         self.embed_dim = embed_dim
         self.num_heads = num_heads
 
@@ -583,9 +571,16 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.normalize_before = True
 
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(2)])
-        self.fc1 =  nn.ModuleList([nn.Linear(self.embed_dim, 4*self.embed_dim) for _ in range(2)])  # The "Add & Norm" part in the paper
+        self.fc1 = nn.ModuleList([nn.Linear(self.embed_dim, 4*self.embed_dim) for _ in range(2)])  # The "Add & Norm" part in the paper
         self.fc2 = nn.ModuleList([nn.Linear(4*self.embed_dim, self.embed_dim) for _ in range(2)])
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(2)])
+        moe_config = MoETransEHRConfig(
+                        num_experts=16,
+                        moe_input_size=12288,
+                        moe_hidden_size=256,
+                        moe_output_size=12288
+                        )
+        self.moe = MoE(moe_config)
 
 
     def forward(self, x_list):
@@ -598,46 +593,72 @@ class TransformerCrossEncoderLayer(nn.Module):
             list of encoded output of shape `(batch, src_len, embed_dim)`
         """
         ###self attn
+        print('x_list_0', x_list)
         residual = x_list
+        seq_len, bs = x_list[0].shape[0], x_list[0].shape[1]
 
         x_list = [l(x) for l, x in zip(self.pre_self_attn_layer_norm, x_list)]
 
-        output= [l(query=x, key=x, value=x) for l, x in zip(self.self_attns, x_list)]
-
-        x_list=[ x for x, _ in output]
-
-        x_list[0]=F.dropout(x_list[0], p=self.res_dropout , training=self.training)
-        x_list[1]=F.dropout(x_list[1], p=self.res_dropout , training=self.training)
+        output = [l(query=x, key=x, value=x) for l, x in zip(self.self_attns, x_list)]
+        # attn: output[0][0].shape -> [48, 3, 128]; attn_weights: output[0][1].shape -> [3, 48, 48]
+        # filter out attn_weights
+        x_list = [x for x, _ in output]
+        x_list[0] = F.dropout(x_list[0], p=self.res_dropout, training=self.training)
+        x_list[1] = F.dropout(x_list[1], p=self.res_dropout, training=self.training)
 
         x_list = [r + x  for r, x in zip(residual, x_list) ]
 #         x_list = [l(x) for l, x in zip(self.post_self_attn_layer_norm, x_list)]
 
         #### cross attn
-
         residual=x_list
         x_list = [l(x) for l, x in zip(self.pre_encoder_attn_layer_norm, x_list)]
-        x_txt,x_ts=  x_list #proj_x_txt, proj_x_ts
+        
+        if self.args.cross_method == "moe":
+            x_txt_2d = torch.reshape(x_list[0], (bs, -1))
+            x_ts_2d = torch.reshape(x_list[1], (bs, -1))
+            embd_len_txt = x_txt_2d.shape[1]
+            embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
+            print('x_list_1', x_list)
+            print('embeddings', embeddings)
+            moe_output = self.moe(embeddings)[0]
+            x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
 
-        # cross: ts -> txt
-        x_ts_to_txt,_=self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
-        # cross:  txt->ts
-        x_txt_to_ts,_=self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
+            x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))
+            x_ts_moe_output = torch.reshape(x_ts_moe, (seq_len, bs, -1))
+            x_txt_moe_output = F.dropout(x_txt_moe_output, p=self.res_dropout, training=self.training)
+            x_ts_moe_output = F.dropout(x_ts_moe_output, p=self.res_dropout, training=self.training)
+            x_list = [r + x for r, x in zip(residual, (x_txt_moe_output, x_ts_moe_output))]
 
-        # else:
-        #     x_low_level = [l(x) for l, x in zip(self.pre_encoder_attn_layer_norm, x_low_level)]
-        #     x_txt_low,x_ts_low=  x_low_level
-        #     # cross: ts -> txt
-        #     x_ts_to_txt,_=self.cross_attn_1(query=x_txt, key=x_ts_low, value=x_ts_low)
-        #     # cross:  txt->ts
-        #     x_txt_to_ts,_=self.cross_attn_2(query=x_ts, key=x_txt_low, value=x_txt_low)
+        # pay attention to how the text and patch embeddings are concated in LIMOE
+        # LIMOE just concat? add modality type embeddings
+        # sparse attention combined with dense attention
+        if self.args.cross_method == "self_cross":
+            x_txt, x_ts = x_list #proj_x_txt, proj_x_ts
+            # cross: ts -> txt
+            x_ts_to_txt, _ = self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
+            # cross: txt->ts
+            x_txt_to_ts, _ = self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
 
+            x_ts_to_txt = F.dropout(x_ts_to_txt, p=self.res_dropout, training=self.training)
+            x_txt_to_ts = F.dropout(x_txt_to_ts, p=self.res_dropout, training=self.training)
+            x_list = [r+ x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
 
-        x_ts_to_txt  = F.dropout(x_ts_to_txt, p=self.res_dropout, training=self.training)
-        x_txt_to_ts  = F.dropout(x_txt_to_ts, p=self.res_dropout, training=self.training)
+        if self.args.cross_method == "moe_cross":
+            x_txt, x_ts = x_list
+            x_ts_to_txt, _ = self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
+            x_txt_to_ts, _ = self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
+            x_txt_2d = torch.reshape(x_ts_to_txt, (bs, -1))
+            x_ts_2d = torch.reshape(x_txt_to_ts, (bs, -1))
+            embd_len_txt = x_txt_2d.shape[1]
+            embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
+            moe_output = self.moe(embeddings)[0]
+            x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
 
-        x_list = [r+ x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
-
-#         x_list = [l(x) for l, x in zip(self.post_encoder_attn_layer_norm, x_list)]
+            x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))
+            x_ts_moe_output = torch.reshape(x_ts_moe, (seq_len, bs, -1))
+            x_txt_moe_output = F.dropout(x_txt_moe_output, p=self.res_dropout, training=self.training)
+            x_ts_moe_output = F.dropout(x_ts_moe_output, p=self.res_dropout, training=self.training)
+            x_list = [r + x for r, x in zip(residual, (x_txt_moe_output, x_ts_moe_output))]
 
         # FNN
         residual = x_list
@@ -658,10 +679,6 @@ class TransformerCrossEncoderLayer(nn.Module):
 
 
         return x_list
-
-
-
-
 
 
 class TransformerEncoderLayer(nn.Module):

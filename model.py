@@ -7,6 +7,8 @@ from module import *
 from interp import *
 import copy
 import pdb
+
+
 class BertForRepresentation(nn.Module):
 
     def __init__(self, args,BioBert):
@@ -15,7 +17,6 @@ class BertForRepresentation(nn.Module):
 
         self.dropout = torch.nn.Dropout(BioBert.config.hidden_dropout_prob)
         self.model_name=args.model_name
-
 
     def forward(self, input_ids_sequence, attention_mask_sequence, sent_idx_list=None , doc_idx_list=None):
         txt_arr = []
@@ -37,7 +38,6 @@ class BertForRepresentation(nn.Module):
         return txt_arr
 
 
-
 class TextModel(nn.Module):
     def __init__(self,args,device,orig_d_txt=768,Biobert=None):
         """
@@ -48,23 +48,14 @@ class TextModel(nn.Module):
         self.device=device
         self.task=args.task
         self.agg_type=args.agg_type
-
-
-
         self.out_dropout = args.dropout
         self.orig_d_txt=orig_d_txt
         self.d_txt= args.embed_dim
         self.bertrep=BertForRepresentation(args,Biobert)
 
-
-
         self.proj_txt =nn.Linear(self.orig_d_txt, self.d_txt)
 
         output_dim = args.num_labels
-
-
-
-
         self.proj1 = nn.Linear(self.d_txt, self.d_txt)
         self.proj2 = nn.Linear(self.d_txt, self.d_txt)
         self.out_layer = nn.Linear(self.d_txt, output_dim)
@@ -83,18 +74,13 @@ class TextModel(nn.Module):
         dimension [batch_size, seq_len, n_features]
 
         """
-
         x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
-
         x_txt=torch.mean(x_txt,dim=1)
-
         proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
 
         last_hs_proj = self.proj2(F.dropout(F.relu(self.proj1(proj_x_txt)), p=self.out_dropout, training=self.training))
         last_hs_proj += proj_x_txt
         output = self.out_layer(last_hs_proj)
-
-
 
         if self.task == 'ihm':
             if labels!=None:
@@ -106,8 +92,6 @@ class TextModel(nn.Module):
                 labels=labels.float()
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.sigmoid(output)
-
-
 
 
 class MULTCrossModel(nn.Module):
@@ -122,7 +106,6 @@ class MULTCrossModel(nn.Module):
             self.modeltype=args.modeltype
         self.num_heads = args.num_heads
 
-
         self.layers = args.layers
         self.device=device
         self.kernel_size=args.kernel_size
@@ -136,7 +119,7 @@ class MULTCrossModel(nn.Module):
         self.task=args.task
         self.tt_max=args.tt_max
         self.cross_method=args.cross_method
-        if self.irregular_learn_emb_ts or self.irregular_learn_emb_text :
+        if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
             self.periodic = nn.Linear(1, args.embed_time-1)
             self.linear = nn.Linear(1, 1)
@@ -176,9 +159,8 @@ class MULTCrossModel(nn.Module):
 
         output_dim = args.num_labels
         if self.modeltype=="TS_Text":
-            if self.cross_method=="self_cross":
-                # author implemented method
-                self.trans_self_cross_ts_txt=self.get_cross_network(layers=args.cross_layers)
+            if self.cross_method in ["self_cross", "moe", "moe_cross"]:
+                self.trans_self_cross_ts_txt=self.get_cross_network(args, layers=args.cross_layers)
                 self.proj1 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
@@ -198,7 +180,7 @@ class MULTCrossModel(nn.Module):
                     self.proj1 = nn.Linear(self.d_txt, self.d_txt)
                     self.proj2 = nn.Linear(self.d_txt, self.d_txt)
                     self.out_layer = nn.Linear(self.d_txt, output_dim)
-                elif  self.cross_method=="Outer":
+                elif self.cross_method=="Outer":
                     self.outer_fusion=Outer(inp1_size=self.d_txt, inp2_size=self.d_ts)
                     self.proj1 = nn.Linear(self.d_txt, self.d_txt)
                     self.proj2 = nn.Linear(self.d_txt, self.d_txt)
@@ -208,7 +190,6 @@ class MULTCrossModel(nn.Module):
                     self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                     self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
 
-
         if self.task=='ihm':
             self.loss_fct1=nn.CrossEntropyLoss()
         elif self.task=='pheno':
@@ -216,25 +197,24 @@ class MULTCrossModel(nn.Module):
         else:
             raise ValueError("Unknown task")
 
-
     def get_network(self, self_type='ts_mem', layers=-1):
         if self_type == 'ts_mem':
             if self.irregular_learn_emb_ts:
-                embed_dim, q_seq_len,kv_seq_len= self.d_ts,self.tt_max, None
+                embed_dim, q_seq_len, kv_seq_len = self.d_ts, self.tt_max, None
             else:
-                embed_dim, q_seq_len,kv_seq_len= self.d_ts,  self.ts_seq_num,None
+                embed_dim, q_seq_len, kv_seq_len = self.d_ts, self.ts_seq_num, None
         elif self_type == 'txt_mem':
             if self.irregular_learn_emb_text:
-                embed_dim,q_seq_len,kv_seq_len= self.d_txt,self.tt_max, None
+                embed_dim, q_seq_len, kv_seq_len = self.d_txt, self.tt_max, None
             else:
-                embed_dim,q_seq_len,kv_seq_len= self.d_txt, self.text_seq_num, None
+                embed_dim, q_seq_len, kv_seq_len = self.d_txt, self.text_seq_num, None
 
         elif self_type =='txt_with_ts':
             if self.irregular_learn_emb_ts:
-                embed_dim,  q_seq_len,kv_seq_len= self.d_ts,self.tt_max, self.tt_max
+                embed_dim, q_seq_len,kv_seq_len= self.d_ts,self.tt_max, self.tt_max
             else:
+                embed_dim, q_seq_len,kv_seq_len= self.d_ts, self.text_seq_num, self.ts_seq_num
 
-                embed_dim,q_seq_len,kv_seq_len= self.d_ts, self.text_seq_num, self.ts_seq_num
         elif self_type =='ts_with_txt':
             if self.irregular_learn_emb_text:
                 embed_dim, q_seq_len,kv_seq_len= self.d_txt, self.tt_max, self.tt_max
@@ -252,23 +232,22 @@ class MULTCrossModel(nn.Module):
                                   res_dropout=self.dropout,
                                   embed_dropout=self.dropout,
                                   attn_mask=self.attn_mask,
-                                q_seq_len=q_seq_len,
-                                 kv_seq_len=kv_seq_len)
+                                  q_seq_len=q_seq_len,
+                                  kv_seq_len=kv_seq_len)
 
-    def get_cross_network(self, layers=-1):
-        embed_dim,  q_seq_len= self.d_ts, self.tt_max
-        return TransformerCrossEncoder(embed_dim=embed_dim,
-                                  num_heads=self.num_heads,
-                                  layers=layers,
-                                  device=self.device,
-                                  attn_dropout=self.dropout,
-                                  relu_dropout=self.dropout,
-                                  res_dropout=self.dropout,
-                                  embed_dropout=self.dropout,
-                                  attn_mask=self.attn_mask,
+    def get_cross_network(self, args, layers=-1):
+        embed_dim, q_seq_len = self.d_ts, self.tt_max
+        return TransformerCrossEncoder(args=args,
+                                        embed_dim=embed_dim,
+                                        num_heads=self.num_heads,
+                                        layers=layers,
+                                        device=self.device,
+                                        attn_dropout=self.dropout,
+                                        relu_dropout=self.dropout,
+                                        res_dropout=self.dropout,
+                                        embed_dropout=self.dropout,
+                                        attn_mask=self.attn_mask,
                                         q_seq_len_1=q_seq_len)
-
-
 
     def learn_time_embedding(self, tt):
         '''
@@ -280,7 +259,6 @@ class MULTCrossModel(nn.Module):
         out2 = torch.sin(self.periodic(tt))
         out1 = self.linear(tt)
         return torch.cat([out1, out2], -1)
-
 
     def forward(self, x_ts, x_ts_mask, ts_tt_list, input_ids_sequences,
                 attn_mask_sequences, note_time_list, note_time_mask_list,labels=None,reg_ts=None):
@@ -295,8 +273,8 @@ class MULTCrossModel(nn.Module):
                 time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
                 #TODO: what does ts_mask used for?
-                x_ts_irg = torch.cat((x_ts,x_ts_mask), 2)
-                x_ts_mask = torch.cat((x_ts_mask,x_ts_mask), 2)
+                x_ts_irg = torch.cat((x_ts, x_ts_mask), 2)
+                x_ts_mask = torch.cat((x_ts_mask, x_ts_mask), 2)
 
                 proj_x_ts_irg=self.time_attn_ts(time_query, time_key_ts, x_ts_irg, x_ts_mask)
                 proj_x_ts_irg=proj_x_ts_irg.transpose(0, 1)
@@ -326,6 +304,7 @@ class MULTCrossModel(nn.Module):
                     proj_x_ts=proj_x_ts_reg
                 else:
                     raise ValueError("Unknown time series type")
+
         if "Text" in self.modeltype:
             # compute irregular clinical notes attention
             x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
@@ -336,14 +315,15 @@ class MULTCrossModel(nn.Module):
 
                 proj_x_txt=self.time_attn(time_query, time_key, x_txt, note_time_mask_list)
                 proj_x_txt=proj_x_txt.transpose(0, 1)
-
             else:
                 x_txt = x_txt.transpose(1, 2)
                 proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
                 proj_x_txt = proj_x_txt.permute(2, 0, 1)
-        if self.cross_method=="self_cross":
+
+        if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             # input to multimodal fusion module: proj_x_txt, proj_x_ts
-            # pdb.set_trace()
+            print('proj_x_txt', proj_x_txt)
+            print('proj_x_ts', proj_x_ts)
             hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
             h_txt_with_ts, h_ts_with_txt=hiddens
             last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)
@@ -371,12 +351,9 @@ class MULTCrossModel(nn.Module):
                 else:
                     last_hs = torch.cat([proj_x_txt[-1],proj_x_ts[-1]], dim=1)
 
-
         last_hs_proj = self.proj2(F.dropout(F.relu(self.proj1(last_hs)), p=self.dropout, training=self.training))
         last_hs_proj += last_hs
         output = self.out_layer(last_hs_proj)
-
-
 
         if self.task == 'ihm':
             if labels!=None:
@@ -388,6 +365,7 @@ class MULTCrossModel(nn.Module):
                 labels=labels.float()
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.sigmoid(output)
+
 
 class TSMixed(nn.Module):
     def __init__(self,args,device,modeltype=None,orig_d_ts=None,orig_reg_d_ts=None,ts_seq_num=None):
@@ -414,7 +392,6 @@ class TSMixed(nn.Module):
         self.TS_model=args.TS_model
         self.tt_max=args.tt_max
 
-
         self.time_query=torch.linspace(0, 1., self.tt_max)
         self.periodic = nn.Linear(1, args.embed_time-1)
         self.linear = nn.Linear(1, 1)
@@ -431,7 +408,7 @@ class TSMixed(nn.Module):
             self.proj_ts_intp = nn.Conv1d(self.orig_d_ts*3, self.d_ts, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
 
         if self.irregular_learn_emb_ts:
-            self.time_attn_ts=multiTimeAttention(self.orig_d_ts*2,  self.d_ts, args.embed_time, 8)
+            self.time_attn_ts=multiTimeAttention(self.orig_d_ts*2, self.d_ts, args.embed_time, 8)
 
         if self.reg_ts:
             self.orig_reg_d_ts=orig_reg_d_ts
@@ -456,8 +433,6 @@ class TSMixed(nn.Module):
             dropout=self.dropout,length=self.tt_max,n_neurons=self.d_ts,layers=args.layers)
         elif self.TS_model=='Atten':
             self.trans_ts_mem = self.get_network(self_type='ts_mem', layers=args.layers)
-
-
         
         self.proj1 = nn.Linear(self.d_ts, self.d_ts)
         self.proj2 = nn.Linear(self.d_ts, self.d_ts)
@@ -489,6 +464,7 @@ class TSMixed(nn.Module):
                                     attn_mask=self.attn_mask,
                                 q_seq_len=q_seq_len,
                                     kv_seq_len=None)
+
     def learn_time_embedding(self, tt):
         tt = tt.to(self.device)
         tt = tt.unsqueeze(-1)
@@ -533,7 +509,6 @@ class TSMixed(nn.Module):
                     proj_x_ts_irg=proj_x_ts_interp
                 if self.Interp and self.irregular_learn_emb_ts and not self.reg_ts :
                     proj_x_ts_reg=proj_x_ts_interp
-                # import pdb; pdb.set_trace()
                 if self.mixup_level=='batch':
                     g_irg=torch.max(proj_x_ts_irg,dim=0).values
                     g_reg =torch.max(proj_x_ts_reg,dim=0).values
@@ -576,11 +551,9 @@ class TSMixed(nn.Module):
             else:
                 raise ValueError("Unknown model type")
                        
-    #
             last_hs_proj = self.proj2(F.dropout(F.relu(self.proj1(last_h_ts)), p=self.dropout, training=self.training))
             last_hs_proj += last_hs
             output = self.out_layer(last_hs_proj)
-
 
         if self.Interp:
             reconloss_interp=recon_loss(x_ts_interp,x_ts_mask_interp,recon_m,recon_interp,self.d_ts)
@@ -601,7 +574,4 @@ class TSMixed(nn.Module):
                 else:
                     return self.loss_fct1(output, labels)
             return torch.nn.functional.sigmoid(output)
-
-
-
 

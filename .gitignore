@@ -138,3 +138,5 @@ run/
 slurm_files/
 *.ipynb
 Data/
+data/
+*.pyc

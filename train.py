@@ -4,6 +4,7 @@ from util import *
 from tqdm import tqdm
 from sklearn.metrics import  roc_auc_score, precision_recall_curve,  auc, f1_score
 
+
 def eval_test(args,model,test_data_loader,device):
     model.eval()
     rootdir=args.ck_file_path
@@ -15,7 +16,6 @@ def eval_test(args,model,test_data_loader,device):
         result_dict = pickle.load(open(rootdir+"result.pkl", "rb"))
     except:
         result_dict={}
-
 
     if args.generate_data:
         seed=str(args.datagereate_seed)+'_'+str(args.seed)
@@ -39,7 +39,6 @@ def eval_test(args,model,test_data_loader,device):
             result_dict[seed][eval_type]={}
             result_dict[seed][eval_type]['val']=checkpoint['best_val'][eval_type]
             result_dict[seed][eval_type]['test']=test_val[eval_type]
-
 
     with open(rootdir+"/result.pkl","wb") as f:
         pickle.dump(result_dict, f)
@@ -65,8 +64,6 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
                 print(epoch,param.requires_grad)
                 break
 
-
-
         for step, batch in tqdm(enumerate(train_dataloader)):
             if batch is None:
                 continue
@@ -88,7 +85,6 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
                         note_time_mask_list=note_time_mask,labels=label,reg_ts=reg_ts)
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
-
 
 
             if (step+1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -116,17 +112,18 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
             writer.close()
 
 
-
 def evaluate_irg(args,device,data_loader,model,mode=None):
     model.eval()
-    # c=0
-    eval_logits= []
+    eval_logits = []
     eval_example = []
-    for idx,batch in enumerate(tqdm(data_loader)):
+    for idx, batch in enumerate(tqdm(data_loader)):
 
-        ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts,input_ids_sequences,attn_mask_sequences, note_time ,note_time_mask, label  = batch
-
-
+        ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, note_time, note_time_mask, label = batch
+        print('ts_input_sequences', ts_input_sequences)
+        print('ts_mask_sequences', ts_mask_sequences)
+        print('ts_tt', ts_tt)
+        print('input_ids_sequences', input_ids_sequences)
+        print('attn_mask_sequences', attn_mask_sequences)
         with torch.no_grad():
 
             if "Text" not in args.modeltype:
@@ -136,7 +133,6 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
                         reg_ts=reg_ts)
 
             else:
-                
                 logits = model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
                         ts_tt_list=ts_tt,\
@@ -150,9 +146,7 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
             eval_logits += logits.tolist()
             eval_example +=label_ids.tolist()
 
-
     eval_vals={}
-
     all_logits = np.array(eval_logits)
     all_label = np.array(eval_example)
     all_pred= np.where(all_logits > 0.5, 1, 0)

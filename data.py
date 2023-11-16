@@ -183,7 +183,7 @@ def TextTSIrgcollate_fn(batch):
         label=torch.stack([example["label"] for example in batch])
         reg_ts_input=torch.stack([example['reg_ts'] for example in batch])
     except:
-        return 
+        return
 
     if len(batch[0])>6:
         input_ids=[pad_sequence(example['input_ids'],batch_first=True,padding_value=0).transpose(0,1) for example in batch]
