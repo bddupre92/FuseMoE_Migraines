@@ -266,6 +266,12 @@ class MULTCrossModel(nn.Module):
         dimension [batch_size, seq_len, n_features]
 
         """
+        # print('x_ts', torch.isnan(x_ts).any())
+        # print('x_ts_mask', torch.isnan(x_ts_mask).any())
+        # print('ts_tt_list', torch.isnan(ts_tt_list).any())
+        # print('input_ids_sequences', torch.isnan(input_ids_sequences).any())
+        # print('attn_mask_sequences', torch.isnan(attn_mask_sequences).any())
+        # print('reg_ts', torch.isnan(reg_ts).any())
         if "TS" in self.modeltype:
             # mTAND module part
             if self.irregular_learn_emb_ts:
@@ -277,25 +283,33 @@ class MULTCrossModel(nn.Module):
                 x_ts_mask = torch.cat((x_ts_mask, x_ts_mask), 2)
 
                 proj_x_ts_irg=self.time_attn_ts(time_query, time_key_ts, x_ts_irg, x_ts_mask)
+                # print('time_query', torch.isnan(time_query).any())
+                # print('time_key_ts', torch.isnan(time_key_ts).any())
+                # print('x_ts_irg', torch.isnan(x_ts_irg).any())
+                # print('x_ts_mask', torch.isnan(x_ts_mask).any())
+                # print('proj_x_ts_irg', torch.isnan(proj_x_ts_irg).any())
                 proj_x_ts_irg=proj_x_ts_irg.transpose(0, 1)
 
-            if self.reg_ts and reg_ts!=None:
+            if self.reg_ts and reg_ts != None:
                 x_ts_reg = reg_ts.transpose(1, 2)
-                proj_x_ts_reg = x_ts_reg if self.orig_reg_d_ts== self.d_ts else self.proj_ts(x_ts_reg)
+                proj_x_ts_reg = x_ts_reg if self.orig_reg_d_ts == self.d_ts else self.proj_ts(x_ts_reg)
+                # print('proj_x_ts_reg', torch.isnan(proj_x_ts_reg).any())
                 proj_x_ts_reg = proj_x_ts_reg.permute(2, 0, 1)
 
             if self.TS_mixup:
                 # TODO: replace self.moe with sparse gated MoE?
                 if self.mixup_level=='batch':
-                    g_irg=torch.max(proj_x_ts_irg,dim=0).values
-                    g_reg =torch.max(proj_x_ts_reg,dim=0).values
-                    moe_gate=torch.cat([g_irg,g_reg],dim=-1)
+                    g_irg=torch.max(proj_x_ts_irg, dim=0).values
+                    g_reg =torch.max(proj_x_ts_reg, dim=0).values
+                    moe_gate=torch.cat([g_irg, g_reg], dim=-1)
                 elif self.mixup_level=='batch_seq' or  self.mixup_level=='batch_seq_feature':
                     moe_gate=torch.cat([proj_x_ts_irg,proj_x_ts_reg],dim=-1)
                 else:
                     raise ValueError("Unknown mixedup type")
-                mixup_rate=self.moe(moe_gate)
-                proj_x_ts=mixup_rate*proj_x_ts_irg+(1-mixup_rate)*proj_x_ts_reg
+                # print('moe_gate', torch.isnan(moe_gate).any())
+                mixup_rate = self.moe(moe_gate)
+                # print('mixup_rate', torch.isnan(mixup_rate).any())
+                proj_x_ts = mixup_rate * proj_x_ts_irg + (1 - mixup_rate) * proj_x_ts_reg
 
             else:
                 if self.irregular_learn_emb_ts:
@@ -322,8 +336,10 @@ class MULTCrossModel(nn.Module):
 
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             # input to multimodal fusion module: proj_x_txt, proj_x_ts
-            print('proj_x_txt', proj_x_txt)
-            print('proj_x_ts', proj_x_ts)
+            # print('proj_x_txt', torch.isnan(proj_x_txt).any())
+            # print('proj_x_ts', torch.isnan(proj_x_ts).any())
+            if torch.isnan(proj_x_txt).any() or torch.isnan(proj_x_ts).any():
+                return None
             hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
             h_txt_with_ts, h_ts_with_txt=hiddens
             last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)

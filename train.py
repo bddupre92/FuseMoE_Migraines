@@ -29,12 +29,12 @@ def eval_test(args,model,test_data_loader,device):
         if substr=='model':
             continue
 
-        file= str(seed)+'.pth.tar'
+        file = str(seed) + '.pth.tar'
         file_path=os.path.join(subdir, file)
         print(file_path)
         checkpoint = torch.load(file_path)
         model.load_state_dict(checkpoint['network'])
-        test_val=evaluate_irg(args=args, device=device,data_loader=test_data_loader,model=model,mode='test' )
+        test_val=evaluate_irg(args=args, device=device, data_loader=test_data_loader, model=model, mode='test')
         for eval_type, val in test_val.items():
             result_dict[seed][eval_type]={}
             result_dict[seed][eval_type]['val']=checkpoint['best_val'][eval_type]
@@ -119,11 +119,6 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
     for idx, batch in enumerate(tqdm(data_loader)):
 
         ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, note_time, note_time_mask, label = batch
-        print('ts_input_sequences', ts_input_sequences)
-        print('ts_mask_sequences', ts_mask_sequences)
-        print('ts_tt', ts_tt)
-        print('input_ids_sequences', input_ids_sequences)
-        print('attn_mask_sequences', attn_mask_sequences)
         with torch.no_grad():
 
             if "Text" not in args.modeltype:
@@ -139,12 +134,14 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
                         input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,reg_ts=reg_ts)
-            if torch.isnan(logits).any():
+            if logits is None:
                 continue
-            logits=logits.cpu().numpy()
-            label_ids=label.cpu().numpy()
+            # if torch.isnan(logits).any():
+            #     continue
+            logits = logits.cpu().numpy()
+            label_ids = label.cpu().numpy()
             eval_logits += logits.tolist()
-            eval_example +=label_ids.tolist()
+            eval_example += label_ids.tolist()
 
     eval_vals={}
     all_logits = np.array(eval_logits)

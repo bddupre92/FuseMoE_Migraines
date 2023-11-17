@@ -506,7 +506,6 @@ class TransformerCrossEncoder(nn.Module):
         """
 
         # x_in_list contains ts and clinical notes tensors
-        print('x_in_list', x_in_list)
         x_list = x_in_list
         length_x1 = x_list[0].size(0) # (length,Batch_size,input_dim)
         length_x2 = x_list[1].size(0)
@@ -575,7 +574,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.fc2 = nn.ModuleList([nn.Linear(4*self.embed_dim, self.embed_dim) for _ in range(2)])
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(2)])
         moe_config = MoETransEHRConfig(
-                        num_experts=16,
+                        num_experts=25,
                         moe_input_size=12288,
                         moe_hidden_size=256,
                         moe_output_size=12288
@@ -593,7 +592,6 @@ class TransformerCrossEncoderLayer(nn.Module):
             list of encoded output of shape `(batch, src_len, embed_dim)`
         """
         ###self attn
-        print('x_list_0', x_list)
         residual = x_list
         seq_len, bs = x_list[0].shape[0], x_list[0].shape[1]
 
@@ -618,8 +616,6 @@ class TransformerCrossEncoderLayer(nn.Module):
             x_ts_2d = torch.reshape(x_list[1], (bs, -1))
             embd_len_txt = x_txt_2d.shape[1]
             embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
-            print('x_list_1', x_list)
-            print('embeddings', embeddings)
             moe_output = self.moe(embeddings)[0]
             x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
 

@@ -243,6 +243,7 @@ class MoE(nn.Module):
             load: a Tensor with shape [num_experts]
         """
         clean_logits = x @ self.w_gate
+        # pdb.set_trace()
         if self.noisy_gating:
             raw_noise_stddev = x @ self.w_noise
             noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon) * train)
@@ -255,6 +256,7 @@ class MoE(nn.Module):
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
         top_k_logits = top_logits[:, :self.k]
         top_k_indices = top_indices[:, :self.k]
+        # top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
         top_k_gates = self.softmax(top_k_logits)
 
         zeros = torch.zeros_like(logits, requires_grad=True)
