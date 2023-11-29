@@ -18,8 +18,6 @@ from accelerate import Accelerator
 from interp import *
 
 
-
-
 def main():
     args = parse_args()
     print(args)
@@ -48,7 +46,6 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-
     make_save_dir(args)
 
     if args.seed==0:
@@ -62,17 +59,13 @@ def main():
         val_dataset, val_sampler, val_dataloader=data_perpare(args,'val',tokenizer)
         _, _, test_data_loader=data_perpare(args,'test',tokenizer)
 
-
     if 'Text' in args.modeltype:
         # text and ts fusion
         model= MULTCrossModel(args=args,device=device,orig_d_ts=17, orig_reg_d_ts=34, orig_d_txt=768,ts_seq_num=args.tt_max,text_seq_num=args.num_of_notes,Biobert=BioBert)
     else:
         # pure time series
         model= TSMixed(args=args,device=device,orig_d_ts=17,orig_reg_d_ts=34, ts_seq_num=args.tt_max)
-
     print(device)
-
-
 
     if args.modeltype=='TS':
         optimizer = torch.optim.Adam(model.parameters(), lr=args.ts_learning_rate)
@@ -84,16 +77,13 @@ def main():
     else:
         raise ValueError("Unknown modeltype in optimizer.")
 
-
     model, optimizer, train_dataloader,val_dataloader,test_data_loader = \
     accelerator.prepare(model, optimizer, train_dataloader,val_dataloader,test_data_loader)
-
 
     trainer_irg(model=model,args=args,accelerator=accelerator,train_dataloader=train_dataloader,\
         dev_dataloader=val_dataloader, test_data_loader=test_data_loader, device=device,\
         optimizer=optimizer,writer=writer)
     eval_test(args,model,test_data_loader, device)
-
 
 
 if __name__ == "__main__":

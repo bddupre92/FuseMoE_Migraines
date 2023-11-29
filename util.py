@@ -139,7 +139,11 @@ def parse_args():
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument("--datagereate_seed", type=int, default=42, help="A seed for reproducible data generation .")
     parser.add_argument("--TS_model", type=str, default='Atten', help="LSTM, CNN, Atten")
-    parser.add_argument("--cross_method", default='moe_cross', type=str, help="all fusion methods: moe, moe_cross, self_cross, MAGGate, MulT, Outer,concat")
+
+    parser.add_argument("--cross_method", default='moe', type=str, help="all fusion methods: moe, moe_cross, self_cross, MAGGate, MulT, Outer,concat")
+    parser.add_argument("--gating_function", default='laplace', type=str, help="all gating functions: softmax, laplace, gaussian")
+    parser.add_argument("--num_of_experts", default=12, type=int, help="number of MLPs in MoE")
+    parser.add_argument("--hidden_size", default=512, type=int, help="hidden size of MLP second layer")
     args = parser.parse_args()
 
     return args

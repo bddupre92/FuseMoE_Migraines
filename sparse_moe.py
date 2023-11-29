@@ -223,15 +223,13 @@ class MoE(nn.Module):
         threshold_if_out = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_out), 1)
         # is each value currently in the top k.
         normal = Normal(self.mean, self.std)
-        # print('clean values', clean_values)
-        # print('threshold_if_in', threshold_if_in)
-        # print('noise_stddev', noise_stddev)
+
         prob_if_in = normal.cdf((clean_values - threshold_if_in)/noise_stddev)
         prob_if_out = normal.cdf((clean_values - threshold_if_out)/noise_stddev)
         prob = torch.where(is_in, prob_if_in, prob_if_out)
         return prob
 
-    def noisy_top_k_gating(self, x, train, noise_epsilon=1e-2):
+    def noisy_top_k_gating(self, x, gating, train, noise_epsilon=1e-2):
         """Noisy top-k gating.
           See paper: https://arxiv.org/abs/1701.06538.
           Args:
@@ -242,8 +240,12 @@ class MoE(nn.Module):
             gates: a Tensor with shape [batch_size, num_experts]
             load: a Tensor with shape [num_experts]
         """
-        clean_logits = x @ self.w_gate
-        # pdb.set_trace()
+        # standard softmax gating
+        if gating == 'softmax':
+            clean_logits = x @ self.w_gate
+        elif gating == 'laplace':
+            clean_logits = torch.cdist(x, torch.t(self.w_gate))
+
         if self.noisy_gating:
             raw_noise_stddev = x @ self.w_noise
             noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon) * train)
@@ -251,14 +253,14 @@ class MoE(nn.Module):
             logits = noisy_logits
         else:
             logits = clean_logits
-
         # calculate topk + 1 that will be needed for the noisy gates
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
         top_k_logits = top_logits[:, :self.k]
         top_k_indices = top_indices[:, :self.k]
-        # top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
-        top_k_gates = self.softmax(top_k_logits)
-
+        if gating == 'softmax':
+            top_k_gates = self.softmax(top_k_logits)
+        elif gating == 'laplace':
+            top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
@@ -268,9 +270,10 @@ class MoE(nn.Module):
             load = self._gates_to_load(gates)
         return gates, load
 
-    def forward(self, x, train=True, loss_coef=1e-2):
+    def forward(self, x, gating, train=True, loss_coef=1e-2):
         """Args:
         x: tensor shape [batch_size, input_size]
+        gating: type of gating function
         train: a boolean scalar.
         loss_coef: a scalar - multiplier on load-balancing losses
         Returns:
@@ -279,7 +282,7 @@ class MoE(nn.Module):
         training loss of the model.  The backpropagation of this loss
         encourages all experts to be approximately equally used across a batch.
         """
-        gates, load = self.noisy_top_k_gating(x, train)
+        gates, load = self.noisy_top_k_gating(x, gating, train)
         # calculate importance loss
         importance = gates.sum(0)
         

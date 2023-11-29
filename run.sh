@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 # for mixup_level in 'batch' 'batch_seq' 'batch_seq_feature'
 # do

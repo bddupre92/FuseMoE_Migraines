@@ -509,7 +509,7 @@ class TransformerCrossEncoder(nn.Module):
         x_list = x_in_list
         length_x1 = x_list[0].size(0) # (length,Batch_size,input_dim)
         length_x2 = x_list[1].size(0)
-        x_list = [ self.embed_scale * x_in for x_in in x_in_list]
+        x_list = [self.embed_scale * x_in for x_in in x_in_list]
         if self.q_seq_len_1 is not None:
             position_x1 = torch.tensor(torch.arange(length_x1),dtype=torch.long).to(self.device)
             position_x2 = torch.tensor(torch.arange(length_x2),dtype=torch.long).to(self.device)
@@ -522,6 +522,8 @@ class TransformerCrossEncoder(nn.Module):
         # encoder layers
         for layer in self.layers:
             x_list = layer(x_list) #proj_x_txt, proj_x_ts
+            if x_list is None:
+                return None
 
         if self.normalize:
             x_list=[l(x) for l, x in zip(self.layer_norm, x_list)]
@@ -574,9 +576,9 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.fc2 = nn.ModuleList([nn.Linear(4*self.embed_dim, self.embed_dim) for _ in range(2)])
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(2)])
         moe_config = MoETransEHRConfig(
-                        num_experts=25,
+                        num_experts=args.num_of_experts,
                         moe_input_size=12288,
-                        moe_hidden_size=256,
+                        moe_hidden_size=args.hidden_size,
                         moe_output_size=12288
                         )
         self.moe = MoE(moe_config)
@@ -616,7 +618,9 @@ class TransformerCrossEncoderLayer(nn.Module):
             x_ts_2d = torch.reshape(x_list[1], (bs, -1))
             embd_len_txt = x_txt_2d.shape[1]
             embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
-            moe_output = self.moe(embeddings)[0]
+            if torch.isnan(embeddings).any():
+                return None
+            moe_output = self.moe(embeddings, self.args.gating_function)[0]
             x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
 
             x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))
@@ -647,7 +651,9 @@ class TransformerCrossEncoderLayer(nn.Module):
             x_ts_2d = torch.reshape(x_txt_to_ts, (bs, -1))
             embd_len_txt = x_txt_2d.shape[1]
             embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
-            moe_output = self.moe(embeddings)[0]
+            if torch.isnan(embeddings).any():
+                return None
+            moe_output = self.moe(embeddings, self.args.gating_function)[0]
             x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
 
             x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))

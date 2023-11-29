@@ -112,7 +112,7 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
             writer.close()
 
 
-def evaluate_irg(args,device,data_loader,model,mode=None):
+def evaluate_irg(args, device, data_loader, model, mode=None):
     model.eval()
     eval_logits = []
     eval_example = []
@@ -136,8 +136,8 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
                         note_time_mask_list=note_time_mask,reg_ts=reg_ts)
             if logits is None:
                 continue
-            # if torch.isnan(logits).any():
-            #     continue
+            if torch.isnan(logits).any():
+                continue
             logits = logits.cpu().numpy()
             label_ids = label.cpu().numpy()
             eval_logits += logits.tolist()
@@ -154,15 +154,15 @@ def evaluate_irg(args,device,data_loader,model,mode=None):
         if mode==None:
             check_point(eval_vals, model, eval_logits, args,"macro_f1")
 
-    elif args.task=='ihm':
-            eval_val =roc_auc_score(np.array(eval_example), np.array(eval_logits))
-            eval_vals['auc']=eval_val
-            (precisions, recalls, thresholds) = precision_recall_curve(np.array(eval_example), np.array(eval_logits))
-            eval_val = auc(recalls, precisions)
-            eval_vals['auprc']=eval_val
-            eval_val=f1_score(np.array(eval_example), all_pred)
-            eval_vals['f1']=eval_val
-            if mode==None:
-                check_point(eval_vals, model, eval_logits, args,"f1")
+    elif args.task =='ihm':
+        eval_val = roc_auc_score(np.array(eval_example), np.array(eval_logits))
+        eval_vals['auc']=eval_val
+        (precisions, recalls, thresholds) = precision_recall_curve(np.array(eval_example), np.array(eval_logits))
+        eval_val = auc(recalls, precisions)
+        eval_vals['auprc']=eval_val
+        eval_val=f1_score(np.array(eval_example), all_pred)
+        eval_vals['f1']=eval_val
+        if mode==None:
+            check_point(eval_vals, model, eval_logits, args,"f1")
 
     return eval_vals

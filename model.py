@@ -68,7 +68,7 @@ class TextModel(nn.Module):
             raise ValueError("Unknown task")
 
 
-    def forward(self,  input_ids_sequences,
+    def forward(self, input_ids_sequences,
                 attn_mask_sequences,labels=None):
         """
         dimension [batch_size, seq_len, n_features]
@@ -338,9 +338,11 @@ class MULTCrossModel(nn.Module):
             # input to multimodal fusion module: proj_x_txt, proj_x_ts
             # print('proj_x_txt', torch.isnan(proj_x_txt).any())
             # print('proj_x_ts', torch.isnan(proj_x_ts).any())
-            if torch.isnan(proj_x_txt).any() or torch.isnan(proj_x_ts).any():
-                return None
+            # if torch.isnan(proj_x_txt).any() or torch.isnan(proj_x_ts).any():
+            #     return None
             hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
+            if hiddens is None:
+                return None
             h_txt_with_ts, h_ts_with_txt=hiddens
             last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)
 

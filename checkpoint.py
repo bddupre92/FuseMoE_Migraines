@@ -59,7 +59,8 @@ def make_save_dir(args):
 
         if  args.TS_mixup:
             output_dir+=args.mixup_level+"/"
-
+        output_dir += f"{args.gating_function}/"
+        
         if args.irregular_learn_emb_ts:
             output_dir+="irregular_TS_"+str(args.embed_time)+"/"
         else:
@@ -74,9 +75,8 @@ def make_save_dir(args):
         if "TS" in args.modeltype:
             output_dir+=str(args.ts_learning_rate)+"_"
 
-
         output_dir+= str(args.num_train_epochs)+"_"+str(args.num_heads)+"_"+str(args.embed_dim)+"_"\
-        +str(args.kernel_size)+"_"+str(args.train_batch_size)+'/'
+        +str(args.kernel_size)+"_"+str(args.train_batch_size)+"_"+str(args.num_of_experts)+"_"+str(args.hidden_size)+'/'
     args.ck_file_path=output_dir
     print(args.ck_file_path)
 
