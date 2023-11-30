@@ -140,3 +140,6 @@ slurm_files/
 Data/
 data/
 *.pyc
+Checkpoints/
+mimic3benchmark/
+mimic3models/

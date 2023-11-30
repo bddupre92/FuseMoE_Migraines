@@ -70,19 +70,22 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
             global_step+=1
             ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time ,note_time_mask, label = batch
 
-            if "Text" not in args.modeltype:
-                loss=model(x_ts=ts_input_sequences, \
-                        x_ts_mask=ts_mask_sequences,\
-                        ts_tt_list=ts_tt,\
-                        labels=label,reg_ts=reg_ts)
-
-            else:
+            if  args.modeltype == "Text_TS":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
                         ts_tt_list=ts_tt,\
                         input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,labels=label,reg_ts=reg_ts)
+            elif args.modeltype == "TS":
+                loss=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        labels=label,reg_ts=reg_ts)
+            elif args.modeltype == "Text":
+                loss=model(input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, labels=label)
+
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
 
@@ -154,7 +157,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
         if mode==None:
             check_point(eval_vals, model, eval_logits, args,"macro_f1")
 
-    elif args.task =='ihm':
+    elif 'ihm' in args.task:
         eval_val = roc_auc_score(np.array(eval_example), np.array(eval_logits))
         eval_vals['auc']=eval_val
         (precisions, recalls, thresholds) = precision_recall_curve(np.array(eval_example), np.array(eval_logits))

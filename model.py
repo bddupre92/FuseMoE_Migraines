@@ -47,7 +47,7 @@ class TextModel(nn.Module):
 
         self.device=device
         self.task=args.task
-        self.agg_type=args.agg_type
+        # self.agg_type=args.agg_type
         self.out_dropout = args.dropout
         self.orig_d_txt=orig_d_txt
         self.d_txt= args.embed_dim
@@ -60,7 +60,7 @@ class TextModel(nn.Module):
         self.proj2 = nn.Linear(self.d_txt, self.d_txt)
         self.out_layer = nn.Linear(self.d_txt, output_dim)
 
-        if self.task=='ihm':
+        if 'ihm' in self.task:
             self.loss_fct1=CrossEntropyLoss()
         elif self.task=='pheno':
             self.loss_fct1=nn.BCEWithLogitsLoss()
@@ -82,7 +82,7 @@ class TextModel(nn.Module):
         last_hs_proj += proj_x_txt
         output = self.out_layer(last_hs_proj)
 
-        if self.task == 'ihm':
+        if 'ihm' in self.task:
             if labels!=None:
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]
@@ -190,7 +190,7 @@ class MULTCrossModel(nn.Module):
                     self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                     self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
 
-        if self.task=='ihm':
+        if 'ihm' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
         elif self.task=='pheno':
             self.loss_fct1=nn.BCEWithLogitsLoss()
@@ -373,7 +373,7 @@ class MULTCrossModel(nn.Module):
         last_hs_proj += last_hs
         output = self.out_layer(last_hs_proj)
 
-        if self.task == 'ihm':
+        if 'ihm' in self.task:
             if labels!=None:
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]
@@ -456,7 +456,7 @@ class TSMixed(nn.Module):
         self.proj2 = nn.Linear(self.d_ts, self.d_ts)
         self.out_layer= nn.Linear(self.d_ts, output_dim)
 
-        if self.task=='ihm':
+        if 'ihm' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
         elif self.task=='pheno':
             self.loss_fct1=nn.BCEWithLogitsLoss()
@@ -576,7 +576,7 @@ class TSMixed(nn.Module):
         if self.Interp:
             reconloss_interp=recon_loss(x_ts_interp,x_ts_mask_interp,recon_m,recon_interp,self.d_ts)
 
-        if self.task == 'ihm':
+        if 'ihm' in self.task:
             if labels!=None:
                 if self.Interp:
                     return self.loss_fct1(output, labels)+reconloss_interp
