@@ -136,10 +136,10 @@ dmypy.json
 
 run/
 slurm_files/
-*.ipynb
 Data/
 data/
 *.pyc
 Checkpoints/
 mimic3benchmark/
 mimic3models/
+mimic3-benchmarks/

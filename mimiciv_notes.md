@@ -21,4 +21,7 @@ Each of the pickle files contains time series (labs + vitals that were included 
 
 Additionally, `--file_path` in `run_mimiciv.sh` should link the folder that contains the `.pkl` files.
 
+### NPJ Paper
+To run this, you should download `icu_notes_text_embeddings.pkl` and `ts_labs_vitals_icu.pkl`, which contain the radiological notes and labs/vitals corresponding to all ICU stays. Then, you can generate embeddings and create predictions by running `npj_replication.ipynb` in the `npj` folder. This notebook contains the code to create TS embeddings according to the NPJ paper, and train/evaluate XGB models, using the code from the HAIM repository.
+
 **Additional notes** I'm also working on a version of the data files that contain `cxr` densenet embeddings. Will add to the Google Drive once I have some sort of working version of the pipeline that uses these embeddings (analgous to how text embeddings are handled.)
