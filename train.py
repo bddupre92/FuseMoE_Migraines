@@ -64,19 +64,29 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
                 print(epoch,param.requires_grad)
                 break
 
+        none_count=0
         for step, batch in tqdm(enumerate(train_dataloader)):
             if batch is None:
+                none_count+=1
                 continue
             global_step+=1
-            ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time ,note_time_mask, label = batch
 
-            if  args.modeltype == "Text_TS":
+            ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label = batch
+
+            if  args.modeltype == "TS_Text":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
                         ts_tt_list=ts_tt,\
                         input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,labels=label,reg_ts=reg_ts)
+            elif args.modeltype == "TS_CXR":
+                loss=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time, 
+                        cxr_time_mask=cxr_time_mask,labels=label,reg_ts=reg_ts)
             elif args.modeltype == "TS":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -89,6 +99,8 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
 
+            # Print loss and 
+
 
             if (step+1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optimizer.step()
@@ -98,6 +110,10 @@ def trainer_irg (model,args,accelerator,train_dataloader,dev_dataloader,test_dat
 
             if writer!=None:
                 writer.add_scalar('training/train_loss',loss,global_step)
+
+        if none_count>0:
+            print("none_count",none_count)
+
         eval_vals=evaluate_irg(args,device,dev_dataloader,model)
         for k,v in eval_vals.items():
             if k== 'auc_scores':
@@ -119,24 +135,56 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
     model.eval()
     eval_logits = []
     eval_example = []
+    none_count=0
     for idx, batch in enumerate(tqdm(data_loader)):
-
-        ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, note_time, note_time_mask, label = batch
+        if batch is None:
+            none_count+=1
+            continue
+        ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label = batch
         with torch.no_grad():
 
-            if "Text" not in args.modeltype:
+            if  args.modeltype == "TS_Text":
                 logits=model(x_ts=ts_input_sequences, \
-                        x_ts_mask=ts_mask_sequences,\
-                        ts_tt_list=ts_tt,\
-                        reg_ts=reg_ts)
-
-            else:
-                logits = model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
                         ts_tt_list=ts_tt,\
                         input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
                         note_time_mask_list=note_time_mask,reg_ts=reg_ts)
+            elif args.modeltype == "TS_CXR":
+                logits=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time, 
+                        cxr_time_mask=cxr_time_mask,reg_ts=reg_ts)
+            elif args.modeltype == "TS":
+                logits=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        reg_ts=reg_ts)
+            elif args.modeltype == "Text":
+                logits=model(input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences)
+        
+            # if "Text" not in args.modeltype:
+            #     logits=model(x_ts=ts_input_sequences, \
+            #             x_ts_mask=ts_mask_sequences,\
+            #             ts_tt_list=ts_tt,\
+            #             reg_ts=reg_ts)
+            # if args.modeltype == "TS_Text":
+            #     logits = model(x_ts=ts_input_sequences, \
+            #             x_ts_mask=ts_mask_sequences,\
+            #             ts_tt_list=ts_tt,\
+            #             input_ids_sequences=input_ids_sequences,\
+            #             attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
+            #             note_time_mask_list=note_time_mask,reg_ts=reg_ts)
+            # elif args.modeltype == "TS_CXR":
+            #     logits=model(x_ts=ts_input_sequences, \
+            #             x_ts_mask=ts_mask_sequences,\
+            #             ts_tt_list=ts_tt,\
+            #             cxr_feats=cxr_feats,\
+            #             cxr_time=cxr_time, 
+            #             cxr_time_mask=cxr_time_mask,reg_ts=reg_ts)
             if logits is None:
                 continue
             if torch.isnan(logits).any():
@@ -145,6 +193,8 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
             label_ids = label.cpu().numpy()
             eval_logits += logits.tolist()
             eval_example += label_ids.tolist()
+    if none_count>0:
+        print("none_count",none_count)
 
     eval_vals={}
     all_logits = np.array(eval_logits)
