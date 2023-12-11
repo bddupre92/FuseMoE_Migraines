@@ -27,7 +27,6 @@ from transformers import (AutoTokenizer,
                           LongformerConfig,
                           LongformerModel,
                           LongformerTokenizer,
-
                          )
 
 def parse_args():
@@ -144,6 +143,7 @@ def parse_args():
     parser.add_argument("--gating_function", default='laplace', type=str, help="all gating functions: softmax, laplace, gaussian")
     parser.add_argument("--num_of_experts", default=12, type=int, help="number of MLPs in MoE")
     parser.add_argument("--hidden_size", default=512, type=int, help="hidden size of MLP second layer")
+    parser.add_argument("--top_k", default=4, type=int, help="the number of experts finally combined together")
     args = parser.parse_args()
 
     return args
@@ -175,10 +175,7 @@ def loadBert(args,device):
 
     BioBert = BioBert.to(device)
     BioBertConfig = BioBert.config
-    return BioBert,  BioBertConfig,tokenizer
-
-
-
+    return BioBert, BioBertConfig,tokenizer
 
 
 def data_generate(args):
@@ -208,12 +205,6 @@ def data_generate(args):
     return train, val, test
 
 
-
-
-
-
-
-
 def metrics_multilabel(y_true, predictions, verbose=1):
     # import pdb; pdb.set_trace()
     auc_scores = metrics.roc_auc_score(y_true, predictions, average=None)
@@ -239,6 +230,7 @@ def metrics_multilabel(y_true, predictions, verbose=1):
 def diff_float(time1, time2):
     h = (time2-time1).astype('timedelta64[m]').astype(int)
     return h/60.0
+
 
 def get_time_to_end_diffs(times, starttimes):
 
@@ -330,9 +322,6 @@ def data_replace(file_path1,file_path2,mode,debug=False):
     data_dict={}
 
     assert len(data_X)==len(data_y)==len(data_text)==len(data_names)==len(start_times)==len(timetoends) 
-
-
-
     assert  len(data_text[0])==len(timetoends[0])
     for x,name in zip(data_X, data_names):
 
@@ -341,13 +330,9 @@ def data_replace(file_path1,file_path2,mode,debug=False):
         new_x=data_dict[data_detail['data_names']]
         data_detail['TS_data']=new_x
 
-
     dataPath3=os.path.join(file_path2, mode + 'p2x_data.pkl')
     with open(dataPath3, 'wb') as f:
         pickle.dump(data_r, f)
-
-
-
 
 
 def merge_reg_irg(dataPath_reg, dataPath_irg):
@@ -356,7 +341,6 @@ def merge_reg_irg(dataPath_reg, dataPath_irg):
 
     with open(dataPath_reg, 'rb') as f:
         data_reg=pickle.load(f)
-
 
     for idx, data_dict in enumerate(data_reg):
         irg_dict=data_irg[data_dict['data_names']]
@@ -368,9 +352,4 @@ def merge_reg_irg(dataPath_reg, dataPath_irg):
 
     with open(dataPath_reg, 'wb') as f:
         pickle.dump(data_reg,f)
-
-
-
-
-
 

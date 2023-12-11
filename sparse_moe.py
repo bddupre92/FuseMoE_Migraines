@@ -245,6 +245,8 @@ class MoE(nn.Module):
             clean_logits = x @ self.w_gate
         elif gating == 'laplace':
             clean_logits = torch.cdist(x, torch.t(self.w_gate))
+        elif gating == 'gaussian':
+            clean_logits = torch.pow(torch.cdist(x, torch.t(self.w_gate)), 2)
 
         if self.noisy_gating:
             raw_noise_stddev = x @ self.w_noise
@@ -259,8 +261,9 @@ class MoE(nn.Module):
         top_k_indices = top_indices[:, :self.k]
         if gating == 'softmax':
             top_k_gates = self.softmax(top_k_logits)
-        elif gating == 'laplace':
+        elif gating == 'laplace' or gating == 'gaussian':
             top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
+            
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
