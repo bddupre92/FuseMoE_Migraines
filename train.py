@@ -71,11 +71,8 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                 continue
             global_step+=1
 
-<<<<<<< HEAD
-=======
             ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label = batch
 
->>>>>>> 87c31e97ab37b062a0f5404f8b99e2f6ef9b5e91
             if  args.modeltype == "TS_Text":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -102,12 +99,9 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
 
-<<<<<<< HEAD
-=======
             # Print loss and 
 
 
->>>>>>> 87c31e97ab37b062a0f5404f8b99e2f6ef9b5e91
             if (step+1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optimizer.step()
                 if scheduler!=None:
