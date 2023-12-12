@@ -57,6 +57,7 @@ config = MoETransEHRConfig(
     moe_hidden_size=256,
     moe_output_size=10
 )
+gating = 'gaussian'
 
 net = MoE(config)
 net = net.to(device)
@@ -79,7 +80,7 @@ for epoch in range(200):  # loop over the dataset multiple times
 
         # forward + backward + optimize
         inputs = inputs.view(inputs.shape[0], -1)
-        outputs, aux_loss = net(inputs)
+        outputs, aux_loss = net(inputs, gating)
         # outputs = net(inputs)
         loss = criterion(outputs, labels)
         # total_loss = loss + aux_loss
@@ -104,7 +105,7 @@ with torch.no_grad():
     for data in testloader:
         images, labels = data
         images, labels = images.to(device), labels.to(device)
-        outputs, _ = net(images.view(images.shape[0], -1))
+        outputs, _ = net(images.view(images.shape[0], -1), gating)
         # outputs = net(images.view(images.shape[0], -1))
         _, predicted = torch.max(outputs.data, 1)
         total += labels.size(0)

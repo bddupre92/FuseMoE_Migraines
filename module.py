@@ -579,7 +579,8 @@ class TransformerCrossEncoderLayer(nn.Module):
                         num_experts=args.num_of_experts,
                         moe_input_size=12288,
                         moe_hidden_size=args.hidden_size,
-                        moe_output_size=12288
+                        moe_output_size=12288,
+                        top_k=args.top_k
                         )
         self.moe = MoE(moe_config)
 

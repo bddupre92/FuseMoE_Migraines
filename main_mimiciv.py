@@ -121,31 +121,27 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-
     make_save_dir(args)
 
     if args.seed==0:
         copy_file(args.ck_file_path+'model/', src=os.getcwd())
     if args.mode=='train':
         if 'Text' in args.modeltype:
-            BioBert, BioBertConfig,tokenizer=loadBert(args,device)
+            BioBert, BioBertConfig, tokenizer = loadBert(args,device)
         else:
-            BioBert,tokenizer=None,None
+            BioBert, tokenizer = None, None
 
         from data_mimiciv import data_perpare
 
-        train_dataset, train_sampler, train_dataloader=data_perpare(args,'train',tokenizer)
-        val_dataset, val_sampler, val_dataloader=data_perpare(args,'val',tokenizer)
-        _, _, test_data_loader=data_perpare(args,'test',tokenizer)
+        train_dataset, train_sampler, train_dataloader = data_perpare(args, 'train', tokenizer)
+        val_dataset, val_sampler, val_dataloader = data_perpare(args, 'val', tokenizer)
+        _, _, test_data_loader = data_perpare(args,'test',tokenizer)
 
 
-    if args.modeltype == 'TS_Text':
+    if args.modeltype == 'Text_TS':
         # text and ts fusion
         model= MULTCrossModel(args=args,device=device,orig_d_ts=30, orig_reg_d_ts=60, orig_d_txt=768,ts_seq_num=args.tt_max,text_seq_num=args.num_of_notes,Biobert=BioBert)
-    elif args.modeltype == 'TS_CXR':
-        # pure time series
-        model= MULTCrossModel(args=args,device=device,orig_d_ts=30,orig_reg_d_ts=60, orig_d_txt=768)
-    elif args.modeltype == 'Text':
+    if args.modeltype == 'Text':
         # pure text
         model= TextModel(args=args,device=device,orig_d_txt=768,Biobert=BioBert)
     elif args.modeltype == 'TS':
@@ -153,8 +149,6 @@ def main():
         model= TSMixed(args=args,device=device,orig_d_ts=30,orig_reg_d_ts=60, ts_seq_num=args.tt_max)
 
     print(device)
-
-
 
     if args.modeltype=='TS':
         optimizer = torch.optim.Adam(model.parameters(), lr=args.ts_learning_rate)
@@ -168,17 +162,13 @@ def main():
     else:
         raise ValueError("Unknown modeltype in optimizer.")
 
-
     model, optimizer, train_dataloader,val_dataloader,test_data_loader = \
     accelerator.prepare(model, optimizer, train_dataloader,val_dataloader,test_data_loader)
-
 
     trainer_irg(model=model,args=args,accelerator=accelerator,train_dataloader=train_dataloader,\
         dev_dataloader=val_dataloader, test_data_loader=test_data_loader, device=device,\
         optimizer=optimizer,writer=writer)
     eval_test(args,model,test_data_loader, device)
-
-
 
 
 if __name__ == "__main__":
