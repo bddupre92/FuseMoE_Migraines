@@ -165,27 +165,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
             elif args.modeltype == "Text":
                 logits=model(input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences)
-        
-            # if "Text" not in args.modeltype:
-            #     logits=model(x_ts=ts_input_sequences, \
-            #             x_ts_mask=ts_mask_sequences,\
-            #             ts_tt_list=ts_tt,\
-            #             reg_ts=reg_ts)
-            # if args.modeltype == "TS_Text":
-            #     logits = model(x_ts=ts_input_sequences, \
-            #             x_ts_mask=ts_mask_sequences,\
-            #             ts_tt_list=ts_tt,\
-            #             input_ids_sequences=input_ids_sequences,\
-            #             attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
-            #             note_time_mask_list=note_time_mask,reg_ts=reg_ts)
-            # elif args.modeltype == "TS_CXR":
-            #     logits=model(x_ts=ts_input_sequences, \
-            #             x_ts_mask=ts_mask_sequences,\
-            #             ts_tt_list=ts_tt,\
-            #             cxr_feats=cxr_feats,\
-            #             cxr_time=cxr_time, 
-            #             cxr_time_mask=cxr_time_mask,reg_ts=reg_ts)
-            if logits is None:
+
                 continue
             if torch.isnan(logits).any():
                 continue
@@ -200,7 +180,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
     all_logits = np.array(eval_logits)
     all_label = np.array(eval_example)
     all_pred= np.where(all_logits > 0.5, 1, 0)
-    if args.task=="pheno":
+    if 'pheno' in args.task:
         eval_vals=metrics_multilabel(all_label, all_logits, verbose=0)
         eval_vals['macro_f1']=f1_score(all_label, all_pred, average='macro')
 

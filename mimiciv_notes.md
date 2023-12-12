@@ -21,6 +21,12 @@ Each of the pickle files contains time series (labs + vitals that were included 
 
 Additionally, `--file_path` in `run_mimiciv.sh` should link the folder that contains the `.pkl` files.
 
+### CXR embeddings
+CXR embeddings are contained in `.pkl` files that include `-cxr-`. The files contain pts for which we have both at least 1 CXR, at least 1 clinical note, and time series measurements in the specified time frame (48 hrs after admission or any time during admission, depending on the file). To run using the files, specify `task='*-48-cxr-notes'` or `task='*-all-cxr-notes'` (where `*` is `ihm` or `pheno`). Then, to use time series & notes specify `modeltype='TS_CXR'` (you can also do `modeltype='TS'` or `modeltype='TS_Text'` to run the time series or time series + text tasks on the sample). Should should also specify `--irregular_learn_emb_cxr` in your input args to learn the irregular time embedding for CXRs.
+
+### 24-phenotyping
+To run this task, specify `task='pheno-all-cxr-notes'` and `--num_labels 25` (for the 25 different acute conditions).
+
 ### NPJ Paper
 To run this, you should download `icu_notes_text_embeddings.pkl` and `ts_labs_vitals_icu.pkl`, which contain the radiological notes and labs/vitals corresponding to all ICU stays. Then, you can generate embeddings and create predictions by running `npj_replication.ipynb` in the `npj` folder. This notebook contains the code to create TS embeddings according to the NPJ paper, and train/evaluate XGB models, using the code from the HAIM repository.
 

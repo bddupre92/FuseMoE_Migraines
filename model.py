@@ -86,7 +86,7 @@ class TextModel(nn.Module):
 
         if 'ihm' in self.task:
             self.loss_fct1=CrossEntropyLoss()
-        elif self.task=='pheno':
+        elif 'pheno' in self.task:
             self.loss_fct1=nn.BCEWithLogitsLoss()
         else:
             raise ValueError("Unknown task")
@@ -111,7 +111,7 @@ class TextModel(nn.Module):
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]
 
-        elif self.task == 'pheno':
+        elif 'pheno' in self.task:
             if labels!=None:
                 labels=labels.float()
                 return self.loss_fct1(output, labels)
@@ -235,7 +235,7 @@ class MULTCrossModel(nn.Module):
 
         if 'ihm' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
-        elif self.task=='pheno':
+        elif 'pheno' in self.task:
             self.loss_fct1=nn.BCEWithLogitsLoss()
         else:
             raise ValueError("Unknown task")
@@ -424,7 +424,7 @@ class MULTCrossModel(nn.Module):
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]
 
-        elif self.task == 'pheno':
+        elif 'pheno' in self.task:
             if labels!=None:
                 labels=labels.float()
                 return self.loss_fct1(output, labels)
@@ -504,7 +504,7 @@ class TSMixed(nn.Module):
 
         if 'ihm' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
-        elif self.task=='pheno':
+        elif 'pheno' in self.task:
             self.loss_fct1=nn.BCEWithLogitsLoss()
         else:
             raise ValueError("Unknown task")
@@ -630,7 +630,7 @@ class TSMixed(nn.Module):
                     return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]
 
-        elif self.task == 'pheno':
+        elif 'pheno' in self.task:
             if labels!=None:
                 labels=labels.float()
                 if self.Interp:
