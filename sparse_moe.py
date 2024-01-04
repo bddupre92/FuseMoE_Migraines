@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.distributions.normal import Normal
 import numpy as np
 from activations import ACT2FN
-from config import MoETransEHRConfig
+from config import FuseMoEConfig
 import pdb
 
 class SparseDispatcher(object):
@@ -118,7 +118,7 @@ class SparseDispatcher(object):
 
 
 class MLP(nn.Module):
-    def __init__(self, config:MoETransEHRConfig, input_size:int, output_size:int, hidden_size:int):
+    def __init__(self, config:FuseMoEConfig, input_size:int, output_size:int, hidden_size:int):
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, output_size)
@@ -147,7 +147,7 @@ class MoE(nn.Module):
     k: an integer - how many experts to use for each batch element
     """
 
-    def __init__(self, config:MoETransEHRConfig):
+    def __init__(self, config:FuseMoEConfig):
         super(MoE, self).__init__()
         self.noisy_gating = config.noisy_gating
         self.num_experts = config.num_experts

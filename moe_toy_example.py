@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.optim import Adam
 import pdb
-from config import MoETransEHRConfig
+from config import FuseMoEConfig
 
 from sparse_moe import MoE
 

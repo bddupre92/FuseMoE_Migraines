@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from config import MoETransEHRConfig
+from config import FuseMoEConfig
 
 from sparse_moe import MoE
 
@@ -51,7 +51,7 @@ else:
 
 # net = MoE(input_size=3072, output_size=10, num_experts=5, hidden_size=256, noisy_gating=True, k=4)
 # net = MLP(input_size=3072, output_size=10, hidden_size=256)
-config = MoETransEHRConfig(
+config = FuseMoEConfig(
     num_experts=5,
     moe_input_size=3072,
     moe_hidden_size=256,

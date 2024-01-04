@@ -8,7 +8,7 @@ import numpy as np
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
-from config import MoETransEHRConfig
+from config import onfig
 from sparse_moe import MoE
 import sys
 import pdb
@@ -579,7 +579,7 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.fc1 = nn.ModuleList([nn.Linear(self.embed_dim, 4 * self.embed_dim) for _ in range(num_modalities)])  # The "Add & Norm" part in the paper
         self.fc2 = nn.ModuleList([nn.Linear(4 * self.embed_dim, self.embed_dim) for _ in range(num_modalities)])
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-        moe_config = MoETransEHRConfig(
+        moe_config = FuseMoEConfig(
                         num_experts=args.num_of_experts,
                         moe_input_size=6144 * num_modalities,
                         moe_hidden_size=args.hidden_size,

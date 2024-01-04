@@ -5,7 +5,7 @@ import torch.nn as nn
 #-------------------#
 # Config
 
-class MoETransEHRConfig:
+class FuseMoEConfig:
     def __init__(
         self, 
         num_experts, 
