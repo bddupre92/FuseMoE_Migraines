@@ -45,7 +45,7 @@ class BertForRepresentation(nn.Module):
         """
         txt_arr = []
 
-        for input_ids,attention_mask  in zip(input_ids_sequence,attention_mask_sequence):
+        for input_ids, attention_mask in zip(input_ids_sequence, attention_mask_sequence):
 
             if 'Longformer' in self.model_name:
 
@@ -143,6 +143,7 @@ class MULTCrossModel(nn.Module):
         self.task=args.task
         self.tt_max=args.tt_max
         self.cross_method=args.cross_method
+        self.num_modalities = args.num_modalities
 
         if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
@@ -172,66 +173,74 @@ class MULTCrossModel(nn.Module):
                     raise ValueError("Unknown mixedup type")
 
         if "Text" in self.modeltype:
-            self.orig_d_txt=orig_d_txt
-            self.d_txt= args.embed_dim
-            self.text_seq_num=text_seq_num
-            self.bertrep=BertForRepresentation(args,Biobert)
+            self.orig_d_txt = orig_d_txt
+            self.d_txt = args.embed_dim
+            self.text_seq_num = text_seq_num
+            self.bertrep = BertForRepresentation(args,Biobert)
 
             if self.irregular_learn_emb_text:
-                self.time_attn=multiTimeAttention(768, self.d_txt, args.embed_time, 8)
+                self.time_attn_text = multiTimeAttention(768, self.d_txt, args.embed_time, 8)
             else:
                 self.proj_txt = nn.Conv1d(self.orig_d_txt, self.d_txt, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
 
-        if self.modeltype == "TS_CXR":
-            self.orig_d_cxr=1024
-            self.d_cxr= args.embed_dim
-            self.cxr_seq_num=5
+        # if self.modeltype == "TS_CXR":
+        if "CXR" in self.modeltype:
+            self.orig_d_cxr = 1024
+            self.d_cxr = args.embed_dim
+            self.cxr_seq_num = 5
 
             if self.irregular_learn_emb_cxr:
-                self.time_attn=multiTimeAttention(1024, self.d_cxr, args.embed_time, 8)
+                self.time_attn_cxr = multiTimeAttention(1024, self.d_cxr, args.embed_time, 8)
             else:
                 self.proj_cxr = nn.Conv1d(self.orig_d_cxr, self.d_cxr, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
 
         output_dim = args.num_labels
-        if self.modeltype=="TS_Text":
-            if self.cross_method in ["self_cross", "moe", "moe_cross"]:
-                self.trans_self_cross_ts_txt=self.get_cross_network(args, layers=args.cross_layers)
+        # if self.modeltype=="TS_Text":
+        if self.cross_method in ["self_cross", "moe", "moe_cross"]:
+            self.trans_self_cross_ts_txt = self.get_cross_network(args, layers=args.cross_layers)
+            dim = 0
+            if "TS" in self.modeltype:
+                dim += self.d_ts
+            if "Text" in self.modeltype:
+                dim += self.d_txt
+            if "CXR" in self.modeltype:
+                dim += self.d_cxr
+            self.proj1 = nn.Linear(dim, dim)
+            self.proj2 = nn.Linear(dim, dim)
+            self.out_layer = nn.Linear(dim, output_dim)
+        else:
+            # baseline fusion methods
+            self.trans_ts_mem = self.get_network(self_type='ts_mem', layers=args.layers)
+            self.trans_txt_mem = self.get_network(self_type='txt_mem', layers=args.layers)
+
+            if self.cross_method=="MulT":
+                self.trans_txt_with_ts=self.get_network(self_type='txt_with_ts',layers=args.cross_layers)
+                self.trans_ts_with_txt=self.get_network(self_type='ts_with_txt',layers=args.cross_layers)
+                self.proj1 = nn.Linear((self.d_ts+self.d_txt), (self.d_ts+self.d_txt))
+                self.proj2 = nn.Linear((self.d_ts+self.d_txt), (self.d_ts+self.d_txt))
+                self.out_layer = nn.Linear((self.d_ts+self.d_txt), output_dim)
+            elif self.cross_method=="MAGGate":
+                self.gate_fusion=MAGGate(inp1_size=self.d_txt, inp2_size=self.d_ts, dropout=self.embed_dropout)
+                self.proj1 = nn.Linear(self.d_txt, self.d_txt)
+                self.proj2 = nn.Linear(self.d_txt, self.d_txt)
+                self.out_layer = nn.Linear(self.d_txt, output_dim)
+            elif self.cross_method=="Outer":
+                self.outer_fusion=Outer(inp1_size=self.d_txt, inp2_size=self.d_ts)
+                self.proj1 = nn.Linear(self.d_txt, self.d_txt)
+                self.proj2 = nn.Linear(self.d_txt, self.d_txt)
+                self.out_layer = nn.Linear(self.d_txt, output_dim)
+            else:
                 self.proj1 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
                 self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
-            else:
-                # baseline fusion methods
-                self.trans_ts_mem = self.get_network(self_type='ts_mem', layers=args.layers)
-                self.trans_txt_mem = self.get_network(self_type='txt_mem', layers=args.layers)
-
-                if self.cross_method=="MulT":
-                    self.trans_txt_with_ts=self.get_network(self_type='txt_with_ts',layers=args.cross_layers)
-                    self.trans_ts_with_txt=self.get_network(self_type='ts_with_txt',layers=args.cross_layers)
-                    self.proj1 = nn.Linear((self.d_ts+self.d_txt), (self.d_ts+self.d_txt))
-                    self.proj2 = nn.Linear((self.d_ts+self.d_txt), (self.d_ts+self.d_txt))
-                    self.out_layer = nn.Linear((self.d_ts+self.d_txt), output_dim)
-                elif self.cross_method=="MAGGate":
-                    self.gate_fusion=MAGGate(inp1_size=self.d_txt, inp2_size=self.d_ts, dropout=self.embed_dropout)
-                    self.proj1 = nn.Linear(self.d_txt, self.d_txt)
-                    self.proj2 = nn.Linear(self.d_txt, self.d_txt)
-                    self.out_layer = nn.Linear(self.d_txt, output_dim)
-                elif self.cross_method=="Outer":
-                    self.outer_fusion=Outer(inp1_size=self.d_txt, inp2_size=self.d_ts)
-                    self.proj1 = nn.Linear(self.d_txt, self.d_txt)
-                    self.proj2 = nn.Linear(self.d_txt, self.d_txt)
-                    self.out_layer = nn.Linear(self.d_txt, output_dim)
-                else:
-                    self.proj1 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
-                    self.proj2 = nn.Linear(self.d_ts+self.d_txt, self.d_ts+self.d_txt)
-                    self.out_layer = nn.Linear(self.d_ts+self.d_txt, output_dim)
         
         # TODO: add baseline fusion methods for TS_CXR
-        if self.modeltype == "TS_CXR":
-            if self.cross_method in ["self_cross", "moe", "moe_cross"]:
-                self.trans_self_cross_ts_txt=self.get_cross_network(args, layers=args.cross_layers)
-                self.proj1 = nn.Linear(self.d_ts+self.d_cxr, self.d_ts+self.d_cxr)
-                self.proj2 = nn.Linear(self.d_ts+self.d_cxr, self.d_ts+self.d_cxr)
-                self.out_layer = nn.Linear(self.d_ts+self.d_cxr, output_dim)
+        # if self.modeltype == "TS_CXR":
+        #     if self.cross_method in ["self_cross", "moe", "moe_cross"]:
+        #         self.trans_self_cross_ts_txt=self.get_cross_network(args, layers=args.cross_layers)
+        #         self.proj1 = nn.Linear(self.d_ts+self.d_cxr, self.d_ts+self.d_cxr)
+        #         self.proj2 = nn.Linear(self.d_ts+self.d_cxr, self.d_ts+self.d_cxr)
+        #         self.out_layer = nn.Linear(self.d_ts+self.d_cxr, output_dim)
 
         if 'ihm' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
@@ -254,7 +263,7 @@ class MULTCrossModel(nn.Module):
 
         elif self_type =='txt_with_ts':
             if self.irregular_learn_emb_ts:
-                embed_dim, q_seq_len,kv_seq_len= self.d_ts,self.tt_max, self.tt_max
+                embed_dim, q_seq_len,kv_seq_len= self.d_ts, self.tt_max, self.tt_max
             else:
                 embed_dim, q_seq_len,kv_seq_len= self.d_ts, self.text_seq_num, self.ts_seq_num
 
@@ -290,7 +299,8 @@ class MULTCrossModel(nn.Module):
                                         res_dropout=self.dropout,
                                         embed_dropout=self.dropout,
                                         attn_mask=self.attn_mask,
-                                        q_seq_len_1=q_seq_len)
+                                        q_seq_len_1=q_seq_len,
+                                        num_modalities=self.num_modalities)
 
     def learn_time_embedding(self, tt):
         '''
@@ -304,7 +314,8 @@ class MULTCrossModel(nn.Module):
         return torch.cat([out1, out2], -1)
 
     def forward(self, x_ts, x_ts_mask, ts_tt_list, input_ids_sequences=None,
-                attn_mask_sequences=None, note_time_list=None, note_time_mask_list=None,labels=None,reg_ts=None,cxr_feats=None, cxr_time=None, cxr_time_mask=None):
+                attn_mask_sequences=None, note_time_list=None, note_time_mask_list=None,
+                labels=None,reg_ts=None,cxr_feats=None, cxr_time=None, cxr_time_mask=None):
         """
         dimension [batch_size, seq_len, n_features]
 
@@ -360,21 +371,22 @@ class MULTCrossModel(nn.Module):
                 if not self.irregular_learn_emb_ts:
                     time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
-                proj_x_txt=self.time_attn(time_query, time_key, x_txt, note_time_mask_list)
+                proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
                 proj_x_txt=proj_x_txt.transpose(0, 1)
             else:
                 x_txt = x_txt.transpose(1, 2)
                 proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
                 proj_x_txt = proj_x_txt.permute(2, 0, 1)
         
-        if self.modeltype == "TS_CXR":
+        # if self.modeltype == "TS_CXR":
+        if "CXR" in self.modeltype:
             # compute irregular clinical notes attention
             if self.irregular_learn_emb_text:
                 time_key = self.learn_time_embedding(cxr_time).to(self.device)
                 if not self.irregular_learn_emb_ts:
                     time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
-                proj_x_cxr=self.time_attn(time_query, time_key, cxr_feats, cxr_time_mask)
+                proj_x_cxr=self.time_attn_cxr(time_query, time_key, cxr_feats, cxr_time_mask)
                 proj_x_cxr=proj_x_cxr.transpose(0, 1)
             else:
                 cxr_feats = cxr_feats.transpose(1, 2)
@@ -386,11 +398,14 @@ class MULTCrossModel(nn.Module):
                 hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
             elif self.modeltype == "TS_CXR":
                 hiddens = self.trans_self_cross_ts_txt([proj_x_cxr, proj_x_ts])
+            elif self.modeltype == "TS_CXR_Text":
+                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt])
                 
             if hiddens is None:
                 return None
-            h_txt_with_ts, h_ts_with_txt=hiddens
-            last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)
+            # h_txt_with_ts, h_ts_with_txt=hiddens
+            last_hs = torch.cat([hid[-1] for hid in hiddens], dim=1)
+            # last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)
 
         else:
             if self.cross_method=="MulT":

@@ -240,7 +240,7 @@ class MoE(nn.Module):
             gates: a Tensor with shape [batch_size, num_experts]
             load: a Tensor with shape [num_experts]
         """
-        # standard softmax gating
+        # TODO: should we add normlization here?
         if gating == 'softmax':
             clean_logits = x @ self.w_gate
         elif gating == 'laplace':

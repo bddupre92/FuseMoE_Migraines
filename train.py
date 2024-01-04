@@ -87,6 +87,16 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                         cxr_feats=cxr_feats,\
                         cxr_time=cxr_time, 
                         cxr_time_mask=cxr_time_mask,labels=label,reg_ts=reg_ts)
+            elif args.modeltype == 'TS_CXR_Text':
+                loss=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
+                        note_time_mask_list=note_time_mask,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time, 
+                        cxr_time_mask=cxr_time_mask,labels=label,reg_ts=reg_ts)
             elif args.modeltype == "TS":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -140,7 +150,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
         if batch is None:
             none_count+=1
             continue
-        ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts , input_ids_sequences,attn_mask_sequences, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label = batch
+        ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label = batch
         with torch.no_grad():
 
             if  args.modeltype == "TS_Text":
@@ -157,6 +167,16 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
                         cxr_feats=cxr_feats,\
                         cxr_time=cxr_time, 
                         cxr_time_mask=cxr_time_mask,reg_ts=reg_ts)
+            elif args.modeltype == 'TS_CXR_Text':
+                logits=model(x_ts=ts_input_sequences,\
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, note_time_list=note_time,\
+                        note_time_mask_list=note_time_mask,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time,\
+                        cxr_time_mask=cxr_time_mask, reg_ts=reg_ts)
             elif args.modeltype == "TS":
                 logits=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -165,7 +185,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
             elif args.modeltype == "Text":
                 logits=model(input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences)
-
+            if logits is None:
                 continue
             if torch.isnan(logits).any():
                 continue

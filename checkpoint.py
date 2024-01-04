@@ -48,7 +48,7 @@ def make_save_dir(args):
         if args.irregular_learn_emb_text and 'Text' in args.modeltype:
             output_dir+= "Text_"+str(args.tt_max)+"/"+args.model_name+"/"+str(args.max_length)+"/"
 
-        if args.modeltype=="TS_Text":
+        if args.num_modalities > 1:
             if args.cross_method=="self_cross":
                 output_dir+='cross_attn'+str(args.cross_layers)+"/"
             else:

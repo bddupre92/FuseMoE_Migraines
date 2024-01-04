@@ -133,7 +133,6 @@ class TSNote_Irg(Dataset):
             dict: A dictionary containing the data at the given index.
         """
         if self.notes_order!=None:
-
             notes_order=self.notes_order
         else:
             # notes_order= 'Last' if self.order_sample[idx]==1  else 'First'
@@ -216,17 +215,27 @@ class TSNote_Irg(Dataset):
             text_time_to_end=torch.tensor(text_time_to_end,dtype=torch.float)
             text_time_mask=torch.tensor(text_time_mask,dtype=torch.long)
 
-        if 'TS_CXR' in self.modeltype:
+        if self.modeltype == 'TS_CXR':
             return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"label":label, 'cxr_feats':cxr_feats, 'cxr_time':cxr_time_to_end, 'cxr_time_mask':cxr_time_mask}
-        if 'Text' not in self.modeltype:
+        elif self.modeltype == 'TS':
             return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"label":label}
-        if notes_order=="Last":
+        elif self.modeltype == 'TS_Text' and notes_order=="Last":
             return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt,'reg_ts':reg_ts, "input_ids":text_token[-self.num_of_notes:],"label":label, "attention_mask":atten_mask[-self.num_of_notes:], \
             'note_time':text_time_to_end[-self.num_of_notes:], 'text_time_mask': text_time_mask[-self.num_of_notes:],
                }
-        else:
+        elif self.modeltype == 'TS_Text' and notes_order!="Last":
             return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"input_ids":text_token[:self.num_of_notes],"label":label, "attention_mask":atten_mask[:self.num_of_notes] ,\
              'note_time':text_time_to_end[:self.num_of_notes],'text_time_mask': text_time_mask[:self.num_of_notes]
+               }
+        elif self.modeltype == 'TS_CXR_Text' and notes_order=="Last":
+            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt,'reg_ts':reg_ts, "input_ids":text_token[-self.num_of_notes:],"label":label, "attention_mask":atten_mask[-self.num_of_notes:], \
+            'note_time':text_time_to_end[-self.num_of_notes:], 'text_time_mask': text_time_mask[-self.num_of_notes:],
+             'cxr_feats':cxr_feats, 'cxr_time':cxr_time_to_end, 'cxr_time_mask':cxr_time_mask
+               }
+        elif self.modeltype == 'TS_CXR_Text' and notes_order!="Last":
+            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"input_ids":text_token[:self.num_of_notes],"label":label, "attention_mask":atten_mask[:self.num_of_notes] ,\
+             'note_time':text_time_to_end[:self.num_of_notes],'text_time_mask': text_time_mask[:self.num_of_notes],
+              'cxr_feats':cxr_feats, 'cxr_time':cxr_time_to_end, 'cxr_time_mask':cxr_time_mask
                }
 
     def __len__(self):
@@ -249,7 +258,6 @@ def load_data(file_path, mode, debug=False, text=False, task='ihm'):
         data: The loaded data.
     """
     dataPath = os.path.join(file_path, mode + '_' + task + '_stays.pkl')
-
     if os.path.isfile(dataPath):
         print('Using', dataPath)
         with open(dataPath, 'rb') as f:
@@ -321,6 +329,8 @@ def TextTSIrgcollate_fn(batch):
 
     return ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts_input, \
          input_ids, attn_mask, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label
+
+
 def TextTSIrgcollate_fn(batch):
 
     batch = list(filter(lambda x: x is not None, batch))
@@ -348,21 +358,16 @@ def TextTSIrgcollate_fn(batch):
         note_time=pad_sequence([torch.tensor(example['note_time'],dtype=torch.float) for example in batch],batch_first=True,padding_value=0)
         note_time_mask=pad_sequence([torch.tensor(example['text_time_mask'],dtype=torch.long) for example in batch],batch_first=True,padding_value=0)
     else:
-        input_ids,attn_mask, note_time, note_time_mask =None,None,None,None
+        input_ids, attn_mask, note_time, note_time_mask = None, None, None, None
     
     if 'cxr_feats' in batch[0].keys():
         # cxr_feats=pad_sequence([example['cxr_feats'] for example in batch],batch_first=True,padding_value=0 )
-        cxr_feats=[pad_sequence(example['cxr_feats'],batch_first=True,padding_value=0) for example in batch]
-        cxr_feats=pad_sequence(cxr_feats,batch_first=True,padding_value=0)
-        cxr_time=pad_sequence([torch.tensor(example['cxr_time'],dtype=torch.float) for example in batch],batch_first=True,padding_value=0)
-        cxr_time_mask=pad_sequence([torch.tensor(example['cxr_time_mask'],dtype=torch.long) for example in batch],batch_first=True,padding_value=0)
+        cxr_feats = [pad_sequence(example['cxr_feats'], batch_first=True, padding_value=0) for example in batch]
+        cxr_feats = pad_sequence(cxr_feats, batch_first=True, padding_value=0)
+        cxr_time = pad_sequence([torch.tensor(example['cxr_time'], dtype=torch.float) for example in batch], batch_first=True, padding_value=0)
+        cxr_time_mask = pad_sequence([torch.tensor(example['cxr_time_mask'], dtype=torch.long) for example in batch], batch_first=True, padding_value=0)
     else:
         cxr_feats, cxr_time, cxr_time_mask = None, None, None
 
     return ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts_input, \
          input_ids,attn_mask, note_time ,note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label
-
-
-
-
-
