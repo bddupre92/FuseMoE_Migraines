@@ -49,7 +49,7 @@ class SparseDispatcher(object):
 
     def __init__(self, num_experts, gates):
         """Create a SparseDispatcher."""
-
+        # each forward pass initialize the sparse dispatcher once
         self._gates = gates
         self._num_experts = num_experts
         # sort experts
@@ -57,12 +57,14 @@ class SparseDispatcher(object):
         # drop indices
         _, self._expert_index = sorted_experts.split(1, dim=1)
         # get according batch index for each expert
+        # _batch_index: sample index inside a batch that is assigned to particular expert, concatenated
         self._batch_index = torch.nonzero(gates)[index_sorted_experts[:, 1], 0]
         # calculate num samples that each expert gets
         self._part_sizes = (gates > 0).sum(0).tolist()
         # expand gates to match with self._batch_index
         gates_exp = gates[self._batch_index.flatten()]
         self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
+        pdb.set_trace()
 
     def dispatch(self, inp):
         """Create one input Tensor for each expert.
@@ -255,7 +257,7 @@ class MoE(nn.Module):
             logits = noisy_logits
         else:
             logits = clean_logits
-        # calculate topk + 1 that will be needed for the noisy gates
+        # calculate topk + 1 that will be needed for the noisy gates, these are already ranked
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
         top_k_logits = top_logits[:, :self.k]
         top_k_indices = top_indices[:, :self.k]
@@ -263,8 +265,9 @@ class MoE(nn.Module):
             top_k_gates = self.softmax(top_k_logits)
         elif gating == 'laplace' or gating == 'gaussian':
             top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
-            
+
         zeros = torch.zeros_like(logits, requires_grad=True)
+        # TODO: why applying indices to sorted gate again? how does scatter doing?
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
         if self.noisy_gating and self.k < self.num_experts:
