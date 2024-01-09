@@ -8,7 +8,7 @@ import numpy as np
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
-from config import onfig
+from config import FuseMoEConfig
 from sparse_moe import MoE
 import sys
 import pdb
