@@ -21,6 +21,13 @@ Each of the pickle files contains time series (labs + vitals that were included 
 
 Additionally, `--file_path` in `run_mimiciv.sh` should link the folder that contains the `.pkl` files.
 
+### LOS task
+In this task, I create a variation on the LOS task used in Soenkensen et al. (2023). The idea is basically to use a similar template for the IHM task -- for pts who stayed in the ICU for *at least 48 hours*, we try to predict discharge within the following *48 hours* (i.e., discharge within 96 hours in total) using (only) data from the first 48 hours. Specifically, it's a binary classification task, where the goal is to predict discharge from the ICU without expiration (death) within 48 hours. The label is `1` if the pt was discharged (alive) within 96 hours, and `0` if the patient stayed in the ICU for more than 96 hours (48 hours for the data window + 48 hours for the prediction interval) *or* if the patient died.
+
+Data is contained in the Google Drive under `mimiciv_data/12-29-23`. The files **without** missingness indicators are saved under `*_los-48-cxr-notes_stays.pkl`, and those **with** missingness indicators are stored under `*_los-48-cxr-notes-missingInd_stays.pkl`, where `*` is in (`train`, `val`, `test`).
+
+The sample sizes for the LOS task are the same as for IHM -- 8,770 for the files without missingness indicators, and 35,131 for the files with missingness indicators.
+
 ### CXR embeddings
 CXR embeddings are contained in `.pkl` files that include `-cxr-`. The files contain pts for which we have both at least 1 CXR, at least 1 clinical note, and time series measurements in the specified time frame (48 hrs after admission or any time during admission, depending on the file). To run using the files, specify `task='*-48-cxr-notes'` or `task='*-all-cxr-notes'` (where `*` is `ihm` or `pheno`). Then, to use time series & notes specify `modeltype='TS_CXR'` (you can also do `modeltype='TS'` or `modeltype='TS_Text'` to run the time series or time series + text tasks on the sample). Should should also specify `--irregular_learn_emb_cxr` in your input args to learn the irregular time embedding for CXRs.
 

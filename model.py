@@ -144,6 +144,7 @@ class MULTCrossModel(nn.Module):
         self.tt_max=args.tt_max
         self.cross_method=args.cross_method
         self.num_modalities = args.num_modalities
+        self.use_pt_text_embeddings = args.use_pt_text_embeddings
 
         if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
@@ -314,7 +315,7 @@ class MULTCrossModel(nn.Module):
         return torch.cat([out1, out2], -1)
 
     def forward(self, x_ts, x_ts_mask, ts_tt_list, input_ids_sequences=None,
-                attn_mask_sequences=None, note_time_list=None, note_time_mask_list=None,
+                attn_mask_sequences=None, text_emb=None, note_time_list=None, note_time_mask_list=None,
                 labels=None,reg_ts=None,cxr_feats=None, cxr_time=None, cxr_time_mask=None):
         """
         dimension [batch_size, seq_len, n_features]
@@ -365,7 +366,11 @@ class MULTCrossModel(nn.Module):
 
         if "Text" in self.modeltype:
             # compute irregular clinical notes attention
-            x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
+            if self.use_pt_text_embeddings:
+                x_txt = text_emb
+            else:
+                x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
+            
             if self.irregular_learn_emb_text:
                 time_key = self.learn_time_embedding(note_time_list).to(self.device)
                 if not self.irregular_learn_emb_ts:
