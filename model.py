@@ -3,6 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 import sys
 import math
+from config import FuseMoEConfig
 from module import *
 from interp import *
 import copy
@@ -128,7 +129,7 @@ class MULTCrossModel(nn.Module):
         else:
             self.modeltype=args.modeltype
         self.num_heads = args.num_heads
-
+        self.args = args
         self.layers = args.layers
         self.device=device
         self.kernel_size=args.kernel_size
@@ -145,6 +146,7 @@ class MULTCrossModel(nn.Module):
         self.cross_method=args.cross_method
         self.num_modalities = args.num_modalities
         self.use_pt_text_embeddings = args.use_pt_text_embeddings
+        self.token_type_embeddings = nn.Embedding(args.num_modalities, 768)
 
         if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
@@ -177,7 +179,7 @@ class MULTCrossModel(nn.Module):
             self.orig_d_txt = orig_d_txt
             self.d_txt = args.embed_dim
             self.text_seq_num = text_seq_num
-            self.bertrep = BertForRepresentation(args,Biobert)
+            self.bertrep = BertForRepresentation(args, Biobert)
 
             if self.irregular_learn_emb_text:
                 self.time_attn_text = multiTimeAttention(768, self.d_txt, args.embed_time, 8)
@@ -243,7 +245,7 @@ class MULTCrossModel(nn.Module):
         #         self.proj2 = nn.Linear(self.d_ts+self.d_cxr, self.d_ts+self.d_cxr)
         #         self.out_layer = nn.Linear(self.d_ts+self.d_cxr, output_dim)
 
-        if 'ihm' in self.task:
+        if 'ihm' in self.task or 'los' in self.task:
             self.loss_fct1=nn.CrossEntropyLoss()
         elif 'pheno' in self.task:
             self.loss_fct1=nn.BCEWithLogitsLoss()
@@ -264,15 +266,15 @@ class MULTCrossModel(nn.Module):
 
         elif self_type =='txt_with_ts':
             if self.irregular_learn_emb_ts:
-                embed_dim, q_seq_len,kv_seq_len= self.d_ts, self.tt_max, self.tt_max
+                embed_dim, q_seq_len,kv_seq_len = self.d_ts, self.tt_max, self.tt_max
             else:
-                embed_dim, q_seq_len,kv_seq_len= self.d_ts, self.text_seq_num, self.ts_seq_num
+                embed_dim, q_seq_len,kv_seq_len = self.d_ts, self.text_seq_num, self.ts_seq_num
 
         elif self_type =='ts_with_txt':
             if self.irregular_learn_emb_text:
-                embed_dim, q_seq_len,kv_seq_len= self.d_txt, self.tt_max, self.tt_max
+                embed_dim, q_seq_len,kv_seq_len = self.d_txt, self.tt_max, self.tt_max
             else:
-                embed_dim, q_seq_len,kv_seq_len= self.d_txt, self.ts_seq_num, self.text_seq_num
+                embed_dim, q_seq_len,kv_seq_len = self.d_txt, self.ts_seq_num, self.text_seq_num
         else:
             raise ValueError("Unknown network type")
 
@@ -314,7 +316,7 @@ class MULTCrossModel(nn.Module):
         out1 = self.linear(tt)
         return torch.cat([out1, out2], -1)
 
-    def forward(self, x_ts, x_ts_mask, ts_tt_list, input_ids_sequences=None,
+    def forward(self, x_ts, x_ts_mask, ts_tt_list, cxr_missing=None, text_missing=None, input_ids_sequences=None,
                 attn_mask_sequences=None, text_emb=None, note_time_list=None, note_time_mask_list=None,
                 labels=None,reg_ts=None,cxr_feats=None, cxr_time=None, cxr_time_mask=None):
         """
@@ -366,27 +368,30 @@ class MULTCrossModel(nn.Module):
 
         if "Text" in self.modeltype:
             # compute irregular clinical notes attention
-            if self.use_pt_text_embeddings:
-                x_txt = text_emb
-            else:
-                x_txt=self.bertrep(input_ids_sequences,attn_mask_sequences)
-            
-            if self.irregular_learn_emb_text:
-                time_key = self.learn_time_embedding(note_time_list).to(self.device)
-                if not self.irregular_learn_emb_ts:
-                    time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+            if not text_missing:
+                if self.use_pt_text_embeddings:
+                    x_txt = text_emb + self.token_type_embeddings(torch.zeros_like(note_time_list, dtype=torch.long, device=x_ts.device))
+                else:
+                    x_txt=self.bertrep(input_ids_sequences, attn_mask_sequences)
 
-                proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
-                proj_x_txt=proj_x_txt.transpose(0, 1)
+                if self.irregular_learn_emb_text:
+                    time_key = self.learn_time_embedding(note_time_list).to(self.device)
+                    if not self.irregular_learn_emb_ts:
+                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+
+                    proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
+                    proj_x_txt=proj_x_txt.transpose(0, 1)
+                else:
+                    x_txt = x_txt.transpose(1, 2)
+                    proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
+                    proj_x_txt = proj_x_txt.permute(2, 0, 1)
             else:
-                x_txt = x_txt.transpose(1, 2)
-                proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
-                proj_x_txt = proj_x_txt.permute(2, 0, 1)
-        
+                # proj_x_txt = None
+                proj_x_txt = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
         # if self.modeltype == "TS_CXR":
         if "CXR" in self.modeltype:
             # compute irregular clinical notes attention
-            if self.irregular_learn_emb_text:
+            if self.irregular_learn_emb_cxr:
                 time_key = self.learn_time_embedding(cxr_time).to(self.device)
                 if not self.irregular_learn_emb_ts:
                     time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
@@ -439,7 +444,7 @@ class MULTCrossModel(nn.Module):
         last_hs_proj += last_hs
         output = self.out_layer(last_hs_proj)
 
-        if 'ihm' in self.task:
+        if 'ihm' in self.task or 'los' in self.task:
             if labels!=None:
                 return self.loss_fct1(output, labels)
             return torch.nn.functional.softmax(output,dim=-1)[:,1]

@@ -99,13 +99,13 @@ class TSNote_Irg(Dataset):
     def __init__(self,args,mode,tokenizer,data=None):
         self.tokenizer = tokenizer
         self.max_len = args.max_length
-        if data !=None:
+        if data != None:
             self.data=data
         else:
-            self.data =load_data(file_path=args.file_path,mode=mode,debug=args.debug,task=args.task)
+            self.data = load_data(file_path=args.file_path,mode=mode,debug=args.debug,task=args.task)
         self.chunk=args.chunk
         if self.chunk:
-            self.text_id_attn_data = load_data(file_path=args.file_path,mode=mode,text=True, task=args.task)
+            self.text_id_attn_data = load_data(file_path=args.file_path,mode=mode,text=True,task=args.task)
         self.padding= "max_length" if args.pad_to_max_length  else False
 
         if mode=="train":
@@ -167,7 +167,7 @@ class TSNote_Irg(Dataset):
         else:
             reg_ts=None
 
-        if 'Text' in self.modeltype :
+        if 'Text' in self.modeltype and not data_detail['text_missing']:
             text_emb = data_detail['text_embeddings']
             text_emb = torch.tensor(text_emb, dtype=torch.float)
 
@@ -182,7 +182,7 @@ class TSNote_Irg(Dataset):
                                                     truncation=True)
                 text_token.append(torch.tensor(inputs['input_ids'],dtype=torch.long))
                 attention_mask=inputs['attention_mask']
-                if "Longformer" in self.model_name :
+                if "Longformer" in self.model_name:
 
                     attention_mask[0]+=1
                     atten_mask.append(torch.tensor(attention_mask,dtype=torch.long))
@@ -212,8 +212,14 @@ class TSNote_Irg(Dataset):
                 atten_mask = atten_mask[:self.num_of_notes]
                 text_time_to_end = text_time_to_end[:self.num_of_notes]
                 text_time_mask = text_time_mask[:self.num_of_notes]
+        else:
+            text_token = [torch.zeros(100)]
+            atten_mask = [torch.zeros(100)]
+            text_emb = [torch.zeros(768)]
+            text_time_to_end = torch.zeros(1)
+            text_time_mask = torch.ones(1)
 
-        if 'CXR' in self.modeltype:
+        if 'CXR' in self.modeltype and not data_detail['cxr_missing']:
             cxr_feats = data_detail['cxr_feats']
             cxr_feats = torch.tensor(cxr_feats, dtype=torch.float)
 
@@ -223,9 +229,9 @@ class TSNote_Irg(Dataset):
             cxr_time_mask = [1] * len(cxr_time_to_end)
             cxr_time_mask = torch.tensor(cxr_time_mask, dtype=torch.long)
         else:
-            cxr_feats = None
-            cxr_time_to_end = None
-            cxr_time_mask = None
+            cxr_feats = torch.zeros((5, 1024))
+            cxr_time_to_end = torch.zeros(5)
+            cxr_time_mask = torch.ones(5)
 
         label=torch.tensor(label,dtype=torch.long)
         ts=torch.tensor(ts,dtype=torch.float)
@@ -233,18 +239,16 @@ class TSNote_Irg(Dataset):
         ts_tt=torch.tensor([t/self.tt_max for t in ts_tt],dtype=torch.float)
 
         if self.modeltype == 'TS_CXR':
-            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"label":label, 'cxr_feats':cxr_feats, 'cxr_time':cxr_time_to_end, 'cxr_time_mask':cxr_time_mask}
+            return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "label": label, 'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask}
         elif self.modeltype == 'TS':
-            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts':reg_ts,"label":label}
+            return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "label": label}
         elif self.modeltype == 'TS_Text':
-            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt,'reg_ts':reg_ts, "input_ids":text_token,"label":label, "attention_mask":atten_mask, "text_embeddings":text_emb, \
-            'note_time':text_time_to_end, 'text_time_mask': text_time_mask,
-               }
+            return {'idx': idx,'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label":label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
+            'note_time':text_time_to_end, 'text_time_mask': text_time_mask}
         elif self.modeltype == 'TS_CXR_Text':
-            return {'idx':idx,'ts':ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt,'reg_ts':reg_ts, "input_ids":text_token,"label":label, "attention_mask":atten_mask, "text_embeddings":text_emb, \
-            'note_time':text_time_to_end, 'text_time_mask': text_time_mask,
-             'cxr_feats':cxr_feats, 'cxr_time':cxr_time_to_end, 'cxr_time_mask':cxr_time_mask
-               }
+            return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label": label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
+            'note_time': text_time_to_end, 'text_time_mask': text_time_mask, 'text_missing': data_detail['text_missing'],
+             'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask, 'cxr_missing': data_detail['cxr_missing']}
 
     def __len__(self):
         return len(self.data)
@@ -277,18 +281,25 @@ def TextTSIrgcollate_fn(batch):
 
     batch = list(filter(lambda x: x is not None, batch))
     batch = list(filter(lambda x: len(x['ts']) <1000, batch))
+    if 'cxr_missing' in batch[0].keys():
+        cxr_missing = torch.stack([torch.tensor(example["cxr_missing"]) for example in batch])
+        text_missing = torch.stack([torch.tensor(example["text_missing"]) for example in batch])
+    else:
+        cxr_missing = None
+        text_missing = None
     try:
-        ts_input_sequences=pad_sequence([example['ts'] for example in batch],batch_first=True,padding_value=0 )
-        ts_mask_sequences=pad_sequence([example['ts_mask'] for example in batch],batch_first=True,padding_value=0 )
-        ts_tt=pad_sequence([example['ts_tt'] for example in batch],batch_first=True,padding_value=0 )
-        label=torch.stack([example["label"] for example in batch])
-
+        ts_input_sequences = pad_sequence([example['ts'] for example in batch], batch_first=True, padding_value=0)
+        ts_mask_sequences = pad_sequence([example['ts_mask'] for example in batch], batch_first=True, padding_value=0)
+        ts_tt = pad_sequence([example['ts_tt'] for example in batch], batch_first=True, padding_value=0 )
+        label = torch.stack([example["label"] for example in batch])
+        
         if batch[0]['reg_ts'] is not None:
             reg_ts_input=torch.stack([example['reg_ts'] for example in batch])
         else:
             reg_ts_input=None
     except:
-        return 
+        # if there is no vital signs, just return
+        return
 
     if 'input_ids' in batch[0].keys():
         input_ids=[pad_sequence(example['input_ids'],batch_first=True,padding_value=0).transpose(0,1) for example in batch]
@@ -319,6 +330,6 @@ def TextTSIrgcollate_fn(batch):
         cxr_time_mask = pad_sequence([torch.tensor(example['cxr_time_mask'], dtype=torch.long) for example in batch], batch_first=True, padding_value=0)
     else:
         cxr_feats, cxr_time, cxr_time_mask = None, None, None
-
-    return ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts_input, \
-         input_ids,attn_mask, text_emb, note_time ,note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label
+    return ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts_input, \
+         input_ids, attn_mask, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label, \
+            cxr_missing, text_missing
