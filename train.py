@@ -71,7 +71,7 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                 continue
             global_step+=1
 
-            ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label, cxr_missing, text_missing = batch
+            ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, ecg_feats, ecg_time, ecg_time_mask, label, cxr_missing, text_missing, ecg_missing = batch
 
             if  args.modeltype == "TS_Text":
                 loss=model(x_ts=ts_input_sequences, \
@@ -98,6 +98,31 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                         cxr_time=cxr_time, \
                         cxr_time_mask=cxr_time_mask,labels=label,reg_ts=reg_ts,\
                         cxr_missing=cxr_missing, text_missing=text_missing)
+            elif args.modeltype == 'TS_CXR_Text':
+                loss=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, text_emb=text_emb, note_time_list=note_time,\
+                        note_time_mask_list=note_time_mask,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time, \
+                        cxr_time_mask=cxr_time_mask,labels=label,reg_ts=reg_ts,\
+                        cxr_missing=cxr_missing, text_missing=text_missing)
+            elif args.modeltype == "TS_CXR_Text_ECG":
+                loss=model(x_ts=ts_input_sequences, \
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, text_emb=text_emb, note_time_list=note_time,\
+                        note_time_mask_list=note_time_mask,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time, \
+                        cxr_time_mask=cxr_time_mask,\
+                        ecg_feats=ecg_feats,\
+                        ecg_time=ecg_time, \
+                        ecg_time_mask=ecg_time_mask,labels=label,reg_ts=reg_ts,\
+                        cxr_missing=cxr_missing, text_missing=text_missing, ecg_missing=ecg_missing)                
             elif args.modeltype == "TS":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -151,7 +176,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
         if batch is None:
             none_count+=1
             continue
-        ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label, cxr_missing, text_missing = batch
+        ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, ecg_feats, ecg_time, ecg_time_mask, label, cxr_missing, text_missing, ecg_missing = batch
         with torch.no_grad():
 
             if  args.modeltype == "TS_Text":
@@ -179,6 +204,20 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
                         cxr_time=cxr_time,\
                         cxr_time_mask=cxr_time_mask, reg_ts=reg_ts,
                         cxr_missing=cxr_missing, text_missing=text_missing)
+            elif args.modeltype == 'TS_CXR_Text_ECG':
+                logits=model(x_ts=ts_input_sequences,\
+                        x_ts_mask=ts_mask_sequences,\
+                        ts_tt_list=ts_tt,\
+                        input_ids_sequences=input_ids_sequences,\
+                        attn_mask_sequences=attn_mask_sequences, text_emb=text_emb, note_time_list=note_time,\
+                        note_time_mask_list=note_time_mask,\
+                        cxr_feats=cxr_feats,\
+                        cxr_time=cxr_time,\
+                        cxr_time_mask=cxr_time_mask,\
+                        ecg_feats=ecg_feats,\
+                        ecg_time=ecg_time,\
+                        ecg_time_mask=ecg_time_mask, reg_ts=reg_ts,
+                        cxr_missing=cxr_missing, text_missing=text_missing, ecg_missing=ecg_missing)
             elif args.modeltype == "TS":
                 logits=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
