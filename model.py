@@ -146,7 +146,7 @@ class MULTCrossModel(nn.Module):
         self.cross_method=args.cross_method
         self.num_modalities = args.num_modalities
         self.use_pt_text_embeddings = args.use_pt_text_embeddings
-        self.token_type_embeddings = nn.Embedding(args.num_modalities, 768)
+        self.token_type_embeddings = nn.Embedding(args.num_modalities, args.embed_dim)
 
         if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
@@ -318,7 +318,7 @@ class MULTCrossModel(nn.Module):
 
     def forward(self, x_ts, x_ts_mask, ts_tt_list, cxr_missing=None, text_missing=None, input_ids_sequences=None,
                 attn_mask_sequences=None, text_emb=None, note_time_list=None, note_time_mask_list=None,
-                labels=None,reg_ts=None,cxr_feats=None, cxr_time=None, cxr_time_mask=None):
+                labels=None, reg_ts=None, cxr_feats=None, cxr_time=None, cxr_time_mask=None):
         """
         dimension [batch_size, seq_len, n_features]
 
@@ -365,12 +365,14 @@ class MULTCrossModel(nn.Module):
                     proj_x_ts=proj_x_ts_reg
                 else:
                     raise ValueError("Unknown time series type")
+            proj_x_ts += self.token_type_embeddings(torch.zeros((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
 
+        mod_count = 1
         if "Text" in self.modeltype:
             # compute irregular clinical notes attention
             if not text_missing:
                 if self.use_pt_text_embeddings:
-                    x_txt = text_emb + self.token_type_embeddings(torch.zeros_like(note_time_list, dtype=torch.long, device=x_ts.device))
+                    x_txt = text_emb
                 else:
                     x_txt=self.bertrep(input_ids_sequences, attn_mask_sequences)
 
@@ -385,23 +387,31 @@ class MULTCrossModel(nn.Module):
                     x_txt = x_txt.transpose(1, 2)
                     proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
                     proj_x_txt = proj_x_txt.permute(2, 0, 1)
+                proj_x_txt += self.token_type_embeddings(torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
             else:
                 # proj_x_txt = None
                 proj_x_txt = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
-        # if self.modeltype == "TS_CXR":
-        if "CXR" in self.modeltype:
-            # compute irregular clinical notes attention
-            if self.irregular_learn_emb_cxr:
-                time_key = self.learn_time_embedding(cxr_time).to(self.device)
-                if not self.irregular_learn_emb_ts:
-                    time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+            mod_count += 1
 
-                proj_x_cxr=self.time_attn_cxr(time_query, time_key, cxr_feats, cxr_time_mask)
-                proj_x_cxr=proj_x_cxr.transpose(0, 1)
+        if "CXR" in self.modeltype:
+            if not cxr_missing:
+                # compute irregular clinical notes attention
+                if self.irregular_learn_emb_cxr:
+                    time_key = self.learn_time_embedding(cxr_time).to(self.device)
+                    if not self.irregular_learn_emb_ts:
+                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+
+                    proj_x_cxr=self.time_attn_cxr(time_query, time_key, cxr_feats, cxr_time_mask)
+                    proj_x_cxr=proj_x_cxr.transpose(0, 1)
+                else:
+                    cxr_feats = cxr_feats.transpose(1, 2)
+                    proj_x_cxr = cxr_feats if self.orig_d_cxr == self.d_cxr else self.proj_cxr(cxr_feats)
+                    proj_x_cxr = proj_x_cxr.permute(2, 0, 1)
+                proj_x_cxr += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
             else:
-                cxr_feats = cxr_feats.transpose(1, 2)
-                proj_x_cxr = cxr_feats if self.orig_d_cxr == self.d_cxr else self.proj_cxr(cxr_feats)
-                proj_x_cxr = proj_x_cxr.permute(2, 0, 1)
+                # proj_x_cxr = None
+                proj_x_cxr = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
+            mod_count += 1
 
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             if self.modeltype == "TS_Text":
