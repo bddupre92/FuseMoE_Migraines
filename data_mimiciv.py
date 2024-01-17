@@ -213,8 +213,8 @@ class TSNote_Irg(Dataset):
                 text_time_to_end = text_time_to_end[:self.num_of_notes]
                 text_time_mask = text_time_mask[:self.num_of_notes]
         else:
-            text_token = [torch.zeros(100)]
-            atten_mask = [torch.zeros(100)]
+            text_token = [torch.zeros(100) for _ in range(5)]
+            atten_mask = [torch.zeros(100) for _ in range(5)]
             text_emb = [torch.zeros(768)]
             text_time_to_end = torch.zeros(1)
             text_time_mask = torch.ones(1)

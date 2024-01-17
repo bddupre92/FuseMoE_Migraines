@@ -294,7 +294,6 @@ class MoE(nn.Module):
         gates, load = self.noisy_top_k_gating(x, gating, train)
         # calculate importance loss
         importance = gates.sum(0)
-        
         # calculate loss
         loss = self.cv_squared(importance) + self.cv_squared(load)
         loss *= loss_coef

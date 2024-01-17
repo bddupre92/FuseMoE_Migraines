@@ -209,7 +209,7 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
         if mode==None:
             check_point(eval_vals, model, eval_logits, args,"macro_f1")
 
-    elif 'ihm' in args.task:
+    elif 'ihm' in args.task or 'los' in args.task:
         eval_val = roc_auc_score(np.array(eval_example), np.array(eval_logits))
         eval_vals['auc']=eval_val
         (precisions, recalls, thresholds) = precision_recall_curve(np.array(eval_example), np.array(eval_logits))

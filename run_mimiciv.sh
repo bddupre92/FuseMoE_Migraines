@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 # for mixup_level in 'batch_seq_feature'
 # do
@@ -34,8 +34,8 @@ python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR_Text
                 --embed_dim 128 \
                 --num_modalities 3 \
                 --model_name "bioLongformer"\
-                --task 'los-48-cxr-notes-missingInd'\
-                --file_path 'Data/los-miss'\
+                --task 'los-48-cxr-notes'\
+                --file_path 'Data/los'\
                 --num_labels 2 \
                 --num_heads 8\
                 --embed_time 64\

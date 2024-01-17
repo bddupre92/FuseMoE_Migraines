@@ -316,6 +316,14 @@ class MULTCrossModel(nn.Module):
         out1 = self.linear(tt)
         return torch.cat([out1, out2], -1)
 
+    def _missing_indices(self, missing_idx):
+        all_indices = torch.arange(len(missing_idx))
+        missing_indices = torch.nonzero(missing_idx).squeeze(1)
+        missing_mask = torch.ones(len(missing_idx), dtype=torch.bool)
+        missing_mask[missing_indices] = False
+        non_missing = all_indices[missing_mask]
+        return missing_indices, non_missing
+
     def forward(self, x_ts, x_ts_mask, ts_tt_list, cxr_missing=None, text_missing=None, input_ids_sequences=None,
                 attn_mask_sequences=None, text_emb=None, note_time_list=None, note_time_mask_list=None,
                 labels=None, reg_ts=None, cxr_feats=None, cxr_time=None, cxr_time_mask=None):
@@ -370,47 +378,51 @@ class MULTCrossModel(nn.Module):
         mod_count = 1
         if "Text" in self.modeltype:
             # compute irregular clinical notes attention
-            if not text_missing:
-                if self.use_pt_text_embeddings:
-                    x_txt = text_emb
-                else:
-                    x_txt=self.bertrep(input_ids_sequences, attn_mask_sequences)
-
-                if self.irregular_learn_emb_text:
-                    time_key = self.learn_time_embedding(note_time_list).to(self.device)
-                    if not self.irregular_learn_emb_ts:
-                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
-
-                    proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
-                    proj_x_txt=proj_x_txt.transpose(0, 1)
-                else:
-                    x_txt = x_txt.transpose(1, 2)
-                    proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
-                    proj_x_txt = proj_x_txt.permute(2, 0, 1)
-                proj_x_txt += self.token_type_embeddings(torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+            # if text_missing is None or torch.all(text_missing == 0):
+            if self.use_pt_text_embeddings:
+                x_txt = text_emb
             else:
-                # proj_x_txt = None
-                proj_x_txt = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
+                x_txt = self.bertrep(input_ids_sequences, attn_mask_sequences)
+
+            if self.irregular_learn_emb_text:
+                time_key = self.learn_time_embedding(note_time_list).to(self.device)
+                if not self.irregular_learn_emb_ts:
+                    time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+
+                proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
+                proj_x_txt=proj_x_txt.transpose(0, 1)
+            else:
+                x_txt = x_txt.transpose(1, 2)
+                proj_x_txt = x_txt if self.orig_d_txt == self.d_txt else self.proj_txt(x_txt)
+                proj_x_txt = proj_x_txt.permute(2, 0, 1)
+            if text_missing is None or torch.all(text_missing == 0):
+                proj_x_txt += self.token_type_embeddings(torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+            elif not torch.all(text_missing == 0):
+                missing_indices, non_missing = self._missing_indices(text_missing)
+                proj_x_txt[:, non_missing, :] += self.token_type_embeddings(torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
+                proj_x_txt[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
         if "CXR" in self.modeltype:
-            if not cxr_missing:
-                # compute irregular clinical notes attention
-                if self.irregular_learn_emb_cxr:
-                    time_key = self.learn_time_embedding(cxr_time).to(self.device)
-                    if not self.irregular_learn_emb_ts:
-                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+            # compute irregular clinical notes attention
+            if self.irregular_learn_emb_cxr:
+                time_key = self.learn_time_embedding(cxr_time).to(self.device)
+                if not self.irregular_learn_emb_ts:
+                    time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
-                    proj_x_cxr=self.time_attn_cxr(time_query, time_key, cxr_feats, cxr_time_mask)
-                    proj_x_cxr=proj_x_cxr.transpose(0, 1)
-                else:
-                    cxr_feats = cxr_feats.transpose(1, 2)
-                    proj_x_cxr = cxr_feats if self.orig_d_cxr == self.d_cxr else self.proj_cxr(cxr_feats)
-                    proj_x_cxr = proj_x_cxr.permute(2, 0, 1)
-                proj_x_cxr += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+                proj_x_cxr=self.time_attn_cxr(time_query, time_key, cxr_feats, cxr_time_mask)
+                proj_x_cxr=proj_x_cxr.transpose(0, 1)
             else:
+                cxr_feats = cxr_feats.transpose(1, 2)
+                proj_x_cxr = cxr_feats if self.orig_d_cxr == self.d_cxr else self.proj_cxr(cxr_feats)
+                proj_x_cxr = proj_x_cxr.permute(2, 0, 1)
+            if cxr_missing is None or torch.all(cxr_missing == 0):
+                proj_x_cxr += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+            elif not torch.all(cxr_missing == 0):
                 # proj_x_cxr = None
-                proj_x_cxr = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
+                missing_indices, non_missing = self._missing_indices(cxr_missing)
+                proj_x_cxr[:, non_missing, :] += self.token_type_embeddings(torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
+                proj_x_cxr[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:

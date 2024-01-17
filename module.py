@@ -581,9 +581,9 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
         moe_config = FuseMoEConfig(
                         num_experts=args.num_of_experts,
-                        moe_input_size=6144 * num_modalities,
+                        moe_input_size=args.tt_max * args.embed_dim * num_modalities,
                         moe_hidden_size=args.hidden_size,
-                        moe_output_size=6144 * num_modalities,
+                        moe_output_size=args.tt_max * args.embed_dim * num_modalities,
                         top_k=args.top_k
                         )
         self.moe = MoE(moe_config)
@@ -622,6 +622,7 @@ class TransformerCrossEncoderLayer(nn.Module):
             x_mod_in = [torch.reshape(x, (bs, -1)) for x in x_list]
             embd_len_list = [0] + list(np.cumsum([x.shape[1] for x in x_mod_in]))
             embeddings = torch.concat(x_mod_in, dim=1)
+            # TODO: check embedding dimensions, divide experts is critical
             # x_txt_2d = torch.reshape(x_list[0], (bs, -1))
             # x_ts_2d = torch.reshape(x_list[1], (bs, -1))
             # embd_len_txt = x_txt_2d.shape[1]
