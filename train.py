@@ -3,6 +3,7 @@ from checkpoint import *
 from util import *
 from tqdm import tqdm
 from sklearn.metrics import  roc_auc_score, precision_recall_curve,  auc, f1_score
+import warnings 
 
 
 def eval_test(args,model,test_data_loader,device):
@@ -132,6 +133,10 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                 loss=model(input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, text_emb=text_emb, labels=label)
 
+            if loss is None:
+                # add warning
+                warnings.warn("loss is None!")
+                continue
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
 
@@ -227,8 +232,10 @@ def evaluate_irg(args, device, data_loader, model, mode=None):
                 logits=model(input_ids_sequences=input_ids_sequences,\
                         attn_mask_sequences=attn_mask_sequences, text_emb=text_emb)
             if logits is None:
+                warnings.warn("logits is None!")
                 continue
             if torch.isnan(logits).any():
+                warnings.warn("logits is nan!")
                 continue
             logits = logits.cpu().numpy()
             label_ids = label.cpu().numpy()
