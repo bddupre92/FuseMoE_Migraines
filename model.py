@@ -436,12 +436,13 @@ class MULTCrossModel(nn.Module):
             elif not torch.all(cxr_missing == 0):
                 # proj_x_cxr = None
                 missing_indices, non_missing = self._missing_indices(cxr_missing)
-                proj_x_cxr[:, non_missing, :] += self.token_type_embeddings(torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
+                proj_x_cxr[:, non_missing, :] += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
                 proj_x_cxr[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
         if "ECG" in self.modeltype:
-            if self.irregular_learn_emb_ecg:
+            # compute irregular ECG attention
+            if self.irregular_learn_emb_cxr:
                 time_key = self.learn_time_embedding(ecg_time).to(self.device)
                 if not self.irregular_learn_emb_ts:
                     time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
