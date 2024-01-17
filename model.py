@@ -435,29 +435,30 @@ class MULTCrossModel(nn.Module):
             elif not torch.all(cxr_missing == 0):
                 # proj_x_cxr = None
                 missing_indices, non_missing = self._missing_indices(cxr_missing)
-                proj_x_cxr[:, non_missing, :] += self.token_type_embeddings(torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
+                proj_x_cxr[:, non_missing, :] += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
                 proj_x_cxr[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
         if "ECG" in self.modeltype:
-            if not ecg_missing:
-                # compute irregular clinical notes attention
-                if self.irregular_learn_emb_cxr:
-                    time_key = self.learn_time_embedding(ecg_time).to(self.device)
-                    if not self.irregular_learn_emb_ts:
-                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+            # compute irregular ECG attention
+            if self.irregular_learn_emb_cxr:
+                time_key = self.learn_time_embedding(ecg_time).to(self.device)
+                if not self.irregular_learn_emb_ts:
+                    time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
 
-                    proj_x_ecg=self.time_attn_cxr(time_query, time_key, ecg_feats, ecg_time_mask)
-                    proj_x_ecg=proj_x_ecg.transpose(0, 1)
-                else:
-                    ecg_feats = ecg_feats.transpose(1, 2)
-                    proj_x_ecg = ecg_feats if self.orig_d_ecg == self.d_ecg else self.proj_cxr(ecg_feats)
-                    proj_x_ecg = proj_x_ecg.permute(2, 0, 1)
-                proj_x_ecg += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+                proj_x_ecg=self.time_attn_cxr(time_query, time_key, ecg_feats, ecg_time_mask)
+                proj_x_ecg=proj_x_ecg.transpose(0, 1)
             else:
+                ecg_feats = ecg_feats.transpose(1, 2)
+                proj_x_ecg = ecg_feats if self.orig_d_ecg == self.d_ecg else self.proj_cxr(ecg_feats)
+                proj_x_ecg = proj_x_ecg.permute(2, 0, 1)
+            if ecg_missing is None or torch.all(ecg_missing == 0):
+                proj_x_ecg += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+            elif not torch.all(ecg_missing == 0):
                 # proj_x_ecg = None
-                proj_x_ecg = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
-            mod_count += 1
+                missing_indices, non_missing = self._missing_indices(ecg_missing)
+                proj_x_ecg[:, non_missing, :] += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, len(non_missing)), dtype=torch.long, device=x_ts.device))
+                proj_x_ecg[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
 
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             if self.modeltype == "TS_Text":
