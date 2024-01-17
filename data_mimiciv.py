@@ -233,6 +233,20 @@ class TSNote_Irg(Dataset):
             cxr_time_to_end = torch.zeros(5)
             cxr_time_mask = torch.ones(5)
 
+        if 'ECG' in self.modeltype and not data_detail['ecg_missing']:
+            ecg_feats = data_detail['ecg_feats']
+            ecg_feats = torch.tensor(ecg_feats, dtype=torch.float)
+
+            ecg_time_to_end = data_detail['ecg_time'].astype(np.float32)
+            ecg_time_to_end = torch.tensor(ecg_time_to_end, dtype=torch.float)
+
+            ecg_time_mask = [1] * len(ecg_time_to_end)
+            ecg_time_mask = torch.tensor(ecg_time_mask, dtype=torch.long)
+        else:
+            ecg_feats = torch.zeros((5, 256))
+            ecg_time_to_end = torch.zeros(5)
+            ecg_time_mask = torch.ones(5)
+
         label=torch.tensor(label,dtype=torch.long)
         ts=torch.tensor(ts,dtype=torch.float)
         ts_mask=torch.tensor(ts_mask,dtype=torch.long)
@@ -249,6 +263,11 @@ class TSNote_Irg(Dataset):
             return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label": label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
             'note_time': text_time_to_end, 'text_time_mask': text_time_mask, 'text_missing': data_detail['text_missing'],
              'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask, 'cxr_missing': data_detail['cxr_missing']}
+        elif self.modeltype == 'TS_CXR_Text_ECG':
+            return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label": label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
+            'note_time': text_time_to_end, 'text_time_mask': text_time_mask, 'text_missing': data_detail['text_missing'],
+             'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask, 'cxr_missing': data_detail['cxr_missing'],
+             'ecg_feats': ecg_feats, 'ecg_time': ecg_time_to_end, 'ecg_time_mask': ecg_time_mask, 'ecg_missing': data_detail['ecg_missing']}    
 
     def __len__(self):
         return len(self.data)
@@ -281,12 +300,16 @@ def TextTSIrgcollate_fn(batch):
 
     batch = list(filter(lambda x: x is not None, batch))
     batch = list(filter(lambda x: len(x['ts']) <1000, batch))
+
     if 'cxr_missing' in batch[0].keys():
         cxr_missing = torch.stack([torch.tensor(example["cxr_missing"]) for example in batch])
         text_missing = torch.stack([torch.tensor(example["text_missing"]) for example in batch])
+        ecg_missing = torch.stack([torch.tensor(example["ecg_missing"]) for example in batch])
     else:
         cxr_missing = None
         text_missing = None
+        ecg_missing = None
+
     try:
         ts_input_sequences = pad_sequence([example['ts'] for example in batch], batch_first=True, padding_value=0)
         ts_mask_sequences = pad_sequence([example['ts_mask'] for example in batch], batch_first=True, padding_value=0)
@@ -330,6 +353,16 @@ def TextTSIrgcollate_fn(batch):
         cxr_time_mask = pad_sequence([torch.tensor(example['cxr_time_mask'], dtype=torch.long) for example in batch], batch_first=True, padding_value=0)
     else:
         cxr_feats, cxr_time, cxr_time_mask = None, None, None
+
+    if 'ecg_feats' in batch[0].keys():
+        ecg_feats = [pad_sequence(example['ecg_feats'], batch_first=True, padding_value=0) for example in batch]
+        cxr_feats = pad_sequence(cxr_feats, batch_first=True, padding_value=0)
+
+        ecg_time = pad_sequence([torch.tensor(example['ecg_time'], dtype=torch.float) for example in batch], batch_first=True, padding_value=0)
+        ecg_time_mask = pad_sequence([torch.tensor(example['ecg_time_mask'], dtype=torch.long) for example in batch], batch_first=True, padding_value=0)
+    else:
+        ecg_feats, ecg_time, ecg_time_mask = None, None, None
+
     return ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts_input, \
-         input_ids, attn_mask, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, label, \
-            cxr_missing, text_missing
+         input_ids, attn_mask, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, ecg_feats, \
+            ecg_time, ecg_time_mask, label, cxr_missing, text_missing, ecg_missing

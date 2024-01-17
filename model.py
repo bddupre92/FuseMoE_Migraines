@@ -197,6 +197,16 @@ class MULTCrossModel(nn.Module):
             else:
                 self.proj_cxr = nn.Conv1d(self.orig_d_cxr, self.d_cxr, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
 
+        if "ECG" in self.modeltype:
+            self.orig_d_ecg = 256
+            self.d_ecg = args.embed_dim
+            self.ecg_seq_num = 5
+
+            if self.irregular_learn_emb_cxr:
+                self.time_attn_cxr = multiTimeAttention(256, self.d_ecg, args.embed_time, 8)
+            else:
+                self.proj_cxr = nn.Conv1d(self.orig_d_ecg, self.d_ecg, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
+
         output_dim = args.num_labels
         # if self.modeltype=="TS_Text":
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
@@ -208,6 +218,9 @@ class MULTCrossModel(nn.Module):
                 dim += self.d_txt
             if "CXR" in self.modeltype:
                 dim += self.d_cxr
+            if "ECG" in self.modeltype:
+                dim += self.d_ecg            
+
             self.proj1 = nn.Linear(dim, dim)
             self.proj2 = nn.Linear(dim, dim)
             self.out_layer = nn.Linear(dim, output_dim)
@@ -324,9 +337,10 @@ class MULTCrossModel(nn.Module):
         non_missing = all_indices[missing_mask]
         return missing_indices, non_missing
 
-    def forward(self, x_ts, x_ts_mask, ts_tt_list, cxr_missing=None, text_missing=None, input_ids_sequences=None,
+    def forward(self, x_ts, x_ts_mask, ts_tt_list, cxr_missing=None, text_missing=None, ecg_missing=None, input_ids_sequences=None,
                 attn_mask_sequences=None, text_emb=None, note_time_list=None, note_time_mask_list=None,
-                labels=None, reg_ts=None, cxr_feats=None, cxr_time=None, cxr_time_mask=None):
+                labels=None, reg_ts=None, cxr_feats=None, cxr_time=None, cxr_time_mask=None, ecg_feats=None,
+                ecg_time=None, ecg_time_mask=None):
         """
         dimension [batch_size, seq_len, n_features]
 
@@ -425,6 +439,26 @@ class MULTCrossModel(nn.Module):
                 proj_x_cxr[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
+        if "ECG" in self.modeltype:
+            if not ecg_missing:
+                # compute irregular clinical notes attention
+                if self.irregular_learn_emb_cxr:
+                    time_key = self.learn_time_embedding(ecg_time).to(self.device)
+                    if not self.irregular_learn_emb_ts:
+                        time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
+
+                    proj_x_ecg=self.time_attn_cxr(time_query, time_key, ecg_feats, ecg_time_mask)
+                    proj_x_ecg=proj_x_ecg.transpose(0, 1)
+                else:
+                    ecg_feats = ecg_feats.transpose(1, 2)
+                    proj_x_ecg = ecg_feats if self.orig_d_ecg == self.d_ecg else self.proj_cxr(ecg_feats)
+                    proj_x_ecg = proj_x_ecg.permute(2, 0, 1)
+                proj_x_ecg += self.token_type_embeddings(mod_count * torch.ones((self.args.tt_max, self.args.train_batch_size), dtype=torch.long, device=x_ts.device))
+            else:
+                # proj_x_ecg = None
+                proj_x_ecg = torch.zeros((self.args.tt_max, self.args.train_batch_size, self.args.embed_dim), device=x_ts.device)
+            mod_count += 1
+
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             if self.modeltype == "TS_Text":
                 hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
@@ -432,6 +466,8 @@ class MULTCrossModel(nn.Module):
                 hiddens = self.trans_self_cross_ts_txt([proj_x_cxr, proj_x_ts])
             elif self.modeltype == "TS_CXR_Text":
                 hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt])
+            elif self.modeltype == "TS_CXR_Text_ECG":
+                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt, proj_x_ecg])
                 
             if hiddens is None:
                 return None
