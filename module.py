@@ -495,7 +495,7 @@ class TransformerCrossEncoder(nn.Module):
         if self.normalize:
             self.layer_norm = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(num_modalities)])
 
-    def forward(self, x_in_list):
+    def forward(self, x_in_list, modality):
         """
         Args:
             x_in_list (list of FloatTensor): embedded input of shape `(src_len, batch, embed_dim)`
@@ -527,7 +527,7 @@ class TransformerCrossEncoder(nn.Module):
         # x_list[1] = F.dropout(x_list[1], p=self.dropout, training=self.training)
         # encoder layers
         for layer in self.layers:
-            x_list = layer(x_list) #proj_x_txt, proj_x_ts
+            x_list = layer(x_list, modality) #proj_x_txt, proj_x_ts
             if x_list is None:
                 return None
 
@@ -584,12 +584,14 @@ class TransformerCrossEncoderLayer(nn.Module):
                         moe_input_size=args.tt_max * args.embed_dim * num_modalities,
                         moe_hidden_size=args.hidden_size,
                         moe_output_size=args.tt_max * args.embed_dim * num_modalities,
-                        top_k=args.top_k
+                        top_k=args.top_k,
+                        router_type=args.router_type,
+                        num_modalities=args.num_modalities
                         )
         self.moe = MoE(moe_config)
+        self.moe = self.moe.to('cuda:0')
 
-
-    def forward(self, x_list):
+    def forward(self, x_list, modality):
         """
         Args:
             x (List of Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
@@ -621,15 +623,15 @@ class TransformerCrossEncoderLayer(nn.Module):
         if self.args.cross_method == "moe":
             x_mod_in = [torch.reshape(x, (bs, -1)) for x in x_list]
             embd_len_list = [0] + list(np.cumsum([x.shape[1] for x in x_mod_in]))
-            embeddings = torch.concat(x_mod_in, dim=1)
-            # TODO: check embedding dimensions, divide experts is critical
             # x_txt_2d = torch.reshape(x_list[0], (bs, -1))
             # x_ts_2d = torch.reshape(x_list[1], (bs, -1))
             # embd_len_txt = x_txt_2d.shape[1]
             # embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
+            embeddings = torch.concat(x_mod_in, dim=1)
             if torch.isnan(embeddings).any():
                 return None
-            moe_out = self.moe(embeddings, self.args.gating_function)[0]
+            # moe_out = self.moe(embeddings, self.args.gating_function)[0]
+            moe_out = self.moe(x_mod_in, self.args.gating_function, modalities=modality)[0]
             x_mod_out = [moe_out[:, embd_len_list[i]:embd_len_list[i + 1]] for i in range(len(embd_len_list) - 1)]
             # x_txt_moe, x_ts_moe = x_mod_out[:, :embd_len_txt], moe_output[:, embd_len_txt:]
             x_allmod_output = [torch.reshape(x, (seq_len, bs, -1)) for x in x_mod_out]

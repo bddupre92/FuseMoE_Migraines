@@ -144,9 +144,11 @@ def parse_args():
     parser.add_argument("--gating_function", default='laplace', type=str, help="all gating functions: softmax, laplace, gaussian")
     parser.add_argument("--num_of_experts", default=12, type=int, help="number of MLPs in MoE")
     parser.add_argument("--hidden_size", default=512, type=int, help="hidden size of MLP second layer")
-    parser.add_argument("--top_k", default=4, type=int, help="the number of experts finally combined together")
+    parser.add_argument("--top_k", default=4, type=int, help="the number of experts finally combined together for joint and permod routers")
+    parser.add_argument("--disjoint_top_k", default=2, type=int, help="the number of experts finally combined together for disjoint routers")
     parser.add_argument("--num_modalities", default=2, type=int, help="the number of input modalities used to train transformer")
     parser.add_argument("--use_pt_text_embeddings", action='store_true', help="Option to use pre-extracted text embeddings")
+    parser.add_argument("--router_type", default='joint', type=str, help="all router types: joint, permod, disjoint")
     args = parser.parse_args()
 
     return args

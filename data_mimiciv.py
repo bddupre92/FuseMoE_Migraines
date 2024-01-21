@@ -22,14 +22,14 @@ def data_perpare(args,mode,tokenizer,data=None):
         sampler (object): The sampler object.
         dataloader (object): The dataloader object.
     """
-    dataset=TSNote_Irg(args,mode, tokenizer,data=data)
+    dataset=TSNote_Irg(args, mode, tokenizer, data=data)
+
     if mode=='train':
         sampler = RandomSampler(dataset)
-        dataloader= DataLoader(dataset, sampler=sampler, batch_size=args.train_batch_size,collate_fn=TextTSIrgcollate_fn)
+        dataloader= DataLoader(dataset, sampler=sampler, batch_size=args.train_batch_size, collate_fn=TextTSIrgcollate_fn)
     else:
         sampler = SequentialSampler(dataset)
-        dataloader= DataLoader(dataset, sampler=sampler, batch_size=args.eval_batch_size,collate_fn=TextTSIrgcollate_fn)
-
+        dataloader= DataLoader(dataset, sampler=sampler, batch_size=args.eval_batch_size, collate_fn=TextTSIrgcollate_fn)
 
     return dataset, sampler, dataloader
 
@@ -160,7 +160,6 @@ class TSNote_Irg(Dataset):
         ts_tt=data_detail["ts_tt"]
 
         # reg_ts = data_detail['reg_ts']
-
         if self.reg_ts:
             reg_ts=F_impute(ts,ts_tt,ts_mask,1,self.tt_max)
             reg_ts=torch.tensor(reg_ts,dtype=torch.float)
@@ -262,7 +261,7 @@ class TSNote_Irg(Dataset):
         elif self.modeltype == 'TS_CXR_Text':
             return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label": label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
             'note_time': text_time_to_end, 'text_time_mask': text_time_mask, 'text_missing': data_detail['text_missing'],
-             'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask, 'cxr_missing': data_detail['cxr_missing']}
+             'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask, 'cxr_missing': data_detail['cxr_missing'], 'ecg_missing': data_detail['ecg_missing']}
         elif self.modeltype == 'TS_CXR_Text_ECG':
             return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "input_ids": text_token, "label": label, "attention_mask": atten_mask, "text_embeddings": text_emb, \
             'note_time': text_time_to_end, 'text_time_mask': text_time_mask, 'text_missing': data_detail['text_missing'],

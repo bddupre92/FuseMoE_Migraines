@@ -47,11 +47,12 @@ class SparseDispatcher(object):
     `Tensor`s for expert i only the batch elements for which `gates[b, i] > 0`.
     """
 
-    def __init__(self, num_experts, gates):
+    def __init__(self, num_experts, gates, router_type):
         """Create a SparseDispatcher."""
         # each forward pass initialize the sparse dispatcher once
         self._gates = gates
         self._num_experts = num_experts
+        self._router_type = router_type
         # sort experts
         sorted_experts, index_sorted_experts = torch.nonzero(gates).sort(0)
         # drop indices
@@ -82,6 +83,8 @@ class SparseDispatcher(object):
         # assigns samples to experts whose gate is nonzero
 
         # expand according to batch index so we can just split by _part_sizes
+        if isinstance(inp, list) and self._router_type == 'joint':
+            inp = torch.concat(inp, dim=1)
         inp_exp = inp[self._batch_index].squeeze(1)
         return torch.split(inp_exp, self._part_sizes, dim=0)
 
@@ -152,7 +155,7 @@ class MoE(nn.Module):
     k: an integer - how many experts to use for each batch element
     """
 
-    def __init__(self, config:FuseMoEConfig):
+    def __init__(self, config: FuseMoEConfig):
         super(MoE, self).__init__()
         self.noisy_gating = config.noisy_gating
         self.num_experts = config.num_experts
@@ -160,12 +163,30 @@ class MoE(nn.Module):
         self.input_size = config.moe_input_size
         self.hidden_size = config.moe_hidden_size
         self.k = config.top_k
+        self.disjoint_k = config.disjoint_top_k
+        self.router_type = config.router_type
+        self.num_modalities = config.num_modalities
 
         # instantiate experts
-        self.experts = nn.ModuleList([MLP(config, self.input_size, self.output_size, self.hidden_size) for i in range(self.num_experts)])
-        self.w_gate = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
-        self.w_noise = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
-
+        if self.router_type == 'disjoint':
+            self.w_gate = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts//self.num_modalities), requires_grad=True) for _ in range(self.num_modalities)]
+            self.w_noise = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts//self.num_modalities), requires_grad=True) for _ in range(self.num_modalities)]
+        elif self.router_type == 'permod':
+            self.w_gate = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts), requires_grad=True) for _ in range(self.num_modalities)]
+            self.w_noise = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts), requires_grad=True) for _ in range(self.num_modalities)]
+        else:
+            self.w_gate = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
+            self.w_noise = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
+        if self.router_type == 'disjoint':
+            self.experts = nn.ModuleList(
+                nn.ModuleList([MLP(config, self.input_size//self.num_modalities, self.output_size, self.hidden_size) for _ in range(self.num_experts//self.num_modalities)])
+                for _ in range(self.num_modalities)
+            )
+        elif self.router_type == 'permod':
+            self.experts = nn.ModuleList([MLP(config, self.input_size//self.num_modalities, self.output_size, self.hidden_size) for _ in range(self.num_experts)])
+        else:
+            self.experts = nn.ModuleList([MLP(config, self.input_size, self.output_size, self.hidden_size) for _ in range(self.num_experts)])
+        
         self.softplus = nn.Softplus()
         self.softmax = nn.Softmax(1)
         self.register_buffer("mean", torch.tensor([0.0]))
@@ -221,7 +242,10 @@ class MoE(nn.Module):
         m = noisy_top_values.size(1)
         top_values_flat = noisy_top_values.flatten()
 
-        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k
+        if self.router_type == 'disjoint':
+            threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.disjoint_k
+        else:
+            threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k
         threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)
         is_in = torch.gt(noisy_values, threshold_if_in)
         threshold_positions_if_out = threshold_positions_if_in - 1
@@ -234,8 +258,49 @@ class MoE(nn.Module):
         prob = torch.where(is_in, prob_if_in, prob_if_out)
         return prob
 
-    def noisy_top_k_gating(self, x, gating, train, noise_epsilon=1e-2):
-        """Noisy top-k gating.
+    def _get_logits(self, x, gating, train, noise_epsilon, idx=None):
+        if idx is not None:
+            w_gate = self.w_gate[idx].to(x.device)
+            w_noise = self.w_noise[idx].to(x.device)
+        else:
+            w_gate = self.w_gate
+            w_noise = self.w_noise
+        if gating == 'softmax':
+            clean_logits = x @ w_gate
+        elif gating == 'laplace':
+            clean_logits = -torch.cdist(x, torch.t(w_gate))
+        elif gating == 'gaussian':
+            clean_logits = -torch.pow(torch.cdist(x, torch.t(w_gate)), 2)
+
+        if self.noisy_gating:
+            raw_noise_stddev = x @ w_noise
+            noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon) * train)
+            noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
+            logits = noisy_logits
+        else:
+            logits = clean_logits
+        return logits, clean_logits, noisy_logits, noise_stddev
+
+    def _top_k_gating(self, logits, gating, clean_logits, noisy_logits, noise_stddev, k):
+        top_logits, top_indices = logits.topk(min(k + 1, self.num_experts), dim=1)
+        top_k_logits = top_logits[:, :k]
+        top_k_indices = top_indices[:, :k]
+        if gating == 'softmax':
+            top_k_gates = self.softmax(top_k_logits)
+        elif gating == 'laplace' or gating == 'gaussian':
+            top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
+
+        zeros = torch.zeros_like(logits, requires_grad=True)
+        gates = zeros.scatter(1, top_k_indices, top_k_gates)
+
+        if self.noisy_gating and k < self.num_experts:
+            load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)).sum(0)
+        else:
+            load = self._gates_to_load(gates)
+        return gates, load
+
+    def noisy_top_k_gating(self, x, gating, train, noise_epsilon=1e-2, modalities=None):
+        """Multimodal noisy top-k gating.
           See paper: https://arxiv.org/abs/1701.06538.
           Args:
             x: input Tensor with shape [batch_size, input_size]
@@ -245,41 +310,30 @@ class MoE(nn.Module):
             gates: a Tensor with shape [batch_size, num_experts]
             load: a Tensor with shape [num_experts]
         """
-        # TODO: should we add normlization here?
-        if gating == 'softmax':
-            clean_logits = x @ self.w_gate
-        elif gating == 'laplace':
-            clean_logits = torch.cdist(x, torch.t(self.w_gate))
-        elif gating == 'gaussian':
-            clean_logits = torch.pow(torch.cdist(x, torch.t(self.w_gate)), 2)
 
-        if self.noisy_gating:
-            raw_noise_stddev = x @ self.w_noise
-            noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon) * train)
-            noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
-            logits = noisy_logits
+        if self.router_type == 'joint':
+            if isinstance(x, list):
+                embeddings = torch.concat(x, dim=1)
+            else:
+                embeddings = x
+            all_logits = self._get_logits(embeddings, gating, train, noise_epsilon)
+            logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
+            gates, load = self._top_k_gating(logits, gating, clean_logits, noisy_logits, noise_stddev, self.k)
+            return gates, load
         else:
-            logits = clean_logits
-        # calculate topk + 1 that will be needed for the noisy gates, these are already ranked
-        top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
-        top_k_logits = top_logits[:, :self.k]
-        top_k_indices = top_indices[:, :self.k]
-        if gating == 'softmax':
-            top_k_gates = self.softmax(top_k_logits)
-        elif gating == 'laplace' or gating == 'gaussian':
-            top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
+            all_gates, all_loads = [], []
+            for i in range(self.num_modalities):
+                all_logits = self._get_logits(x[i], gating, train, noise_epsilon, idx=i)
+                logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
+                if self.router_type == 'permod':
+                    gates, load = self._top_k_gating(logits, gating, clean_logits, noisy_logits, noise_stddev, self.k)
+                else:
+                    gates, load = self._top_k_gating(logits, gating, clean_logits, noisy_logits, noise_stddev, self.disjoint_k)
+                all_gates.append(gates)
+                all_loads.append(load)
+            return all_gates, all_loads
 
-        zeros = torch.zeros_like(logits, requires_grad=True)
-        # TODO: why applying indices to sorted gate again? how does scatter doing?
-        gates = zeros.scatter(1, top_k_indices, top_k_gates)
-
-        if self.noisy_gating and self.k < self.num_experts:
-            load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)).sum(0)
-        else:
-            load = self._gates_to_load(gates)
-        return gates, load
-
-    def forward(self, x, gating, train=True, loss_coef=1e-2):
+    def forward(self, x, gating, train=True, loss_coef=1e-2, modalities=None):
         """Args:
         x: tensor shape [batch_size, input_size]
         gating: type of gating function
@@ -291,16 +345,27 @@ class MoE(nn.Module):
         training loss of the model.  The backpropagation of this loss
         encourages all experts to be approximately equally used across a batch.
         """
-        gates, load = self.noisy_top_k_gating(x, gating, train)
+        gates, load = self.noisy_top_k_gating(x, gating, train, modalities=modalities)
         # calculate importance loss
-        importance = gates.sum(0)
-        # calculate loss
-        loss = self.cv_squared(importance) + self.cv_squared(load)
-        loss *= loss_coef
-
-        dispatcher = SparseDispatcher(self.num_experts, gates)
-        expert_inputs = dispatcher.dispatch(x)
-        gates = dispatcher.expert_to_gates()
-        expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
-        y = dispatcher.combine(expert_outputs)
+        if isinstance(gates, list):
+            loss, y, sub_experts = 0, 0, self.num_experts//self.num_modalities
+            for g, l in zip(gates, load):
+                loss += self.cv_squared(g.sum(0)) + self.cv_squared(l)
+            loss *= loss_coef
+            for j, g in enumerate(gates):
+                dispatcher = SparseDispatcher(self.num_experts, g, self.router_type)
+                expert_inputs = dispatcher.dispatch(x[j])
+                if self.router_type == 'permod':
+                    expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
+                elif self.router_type == 'disjoint':
+                    expert_outputs = [self.experts[j][i](expert_inputs[i]) for i in range(sub_experts)]
+                y += dispatcher.combine(expert_outputs)
+        else:
+            loss = self.cv_squared(gates.sum(0)) + self.cv_squared(load)
+            loss *= loss_coef
+            dispatcher = SparseDispatcher(self.num_experts, gates, self.router_type)
+            expert_inputs = dispatcher.dispatch(x)
+            # gates = dispatcher.expert_to_gates() # how is this line be used?
+            expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
+            y = dispatcher.combine(expert_outputs)
         return y, loss

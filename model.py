@@ -462,13 +462,13 @@ class MULTCrossModel(nn.Module):
 
         if self.cross_method in ["self_cross", "moe", "moe_cross"]:
             if self.modeltype == "TS_Text":
-                hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts])
+                hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts], ['txt', 'ts'])
             elif self.modeltype == "TS_CXR":
-                hiddens = self.trans_self_cross_ts_txt([proj_x_cxr, proj_x_ts])
+                hiddens = self.trans_self_cross_ts_txt([proj_x_cxr, proj_x_ts], ['cxr', 'ts'])
             elif self.modeltype == "TS_CXR_Text":
-                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt])
+                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt], ['ts', 'cxr', 'txt'])
             elif self.modeltype == "TS_CXR_Text_ECG":
-                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt, proj_x_ecg])
+                hiddens = self.trans_self_cross_ts_txt([proj_x_ts, proj_x_cxr, proj_x_txt, proj_x_ecg], ['ts', 'cxr', 'txt', 'ecg'])
                 
             if hiddens is None:
                 return None

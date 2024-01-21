@@ -12,9 +12,12 @@ class FuseMoEConfig:
         moe_input_size,
         moe_hidden_size,
         moe_output_size,
+        router_type,
+        num_modalities=1,
         vocab_size=100,
         num_tasks=2, 
         top_k=4,
+        disjoint_top_k=2,
         noisy_gating=True,
         max_position_embeddings=512,
         type_vocab_size=2,
@@ -49,10 +52,13 @@ class FuseMoEConfig:
         self.num_experts = num_experts
         self.num_tasks = num_tasks
         self.top_k = top_k
+        self.disjoint_top_k = disjoint_top_k
         self.noisy_gating = noisy_gating
         self.moe_input_size = moe_input_size
         self.moe_hidden_size = moe_hidden_size
         self.moe_output_size = moe_output_size
+        self.router_type = router_type
+        self.num_modalities = num_modalities
 
         # image
         self.image_size = image_size
@@ -99,16 +105,22 @@ class FuseMoEConfig:
         moe_input_size,
         moe_hidden_size,
         moe_output_size,
+        router_type,
+        num_modalities,
         top_k=4,
+        disjoint_top_k=2,
         noisy_gating=True,
     ):
         self.num_experts = num_experts
         self.num_tasks = num_tasks
         self.top_k = top_k
+        self.disjoint_top_k = disjoint_top_k
         self.noisy_gating = noisy_gating
         self.moe_input_size = moe_input_size
         self.moe_hidden_size = moe_hidden_size
         self.moe_output_size = moe_output_size
+        self.router_type = router_type
+        self.num_modalities = num_modalities
 
     def set_transformer_params(
         self, 

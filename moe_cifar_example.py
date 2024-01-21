@@ -55,9 +55,11 @@ config = FuseMoEConfig(
     num_experts=5,
     moe_input_size=3072,
     moe_hidden_size=256,
-    moe_output_size=10
+    moe_output_size=10,
+    top_k=4,
+    router_type='joint',
 )
-gating = 'gaussian'
+gating = 'laplace'
 
 net = MoE(config)
 net = net.to(device)
