@@ -112,6 +112,7 @@ def parse_args():
     parser.add_argument("--irregular_learn_emb_ts", action='store_true')
     parser.add_argument("--irregular_learn_emb_text", action='store_true')
     parser.add_argument("--irregular_learn_emb_cxr", action='store_true')
+    parser.add_argument("--irregular_learn_emb_ecg", action='store_true')
     parser.add_argument("--reg_ts", action='store_true')
     parser.add_argument("--tt_max", default=48, type=int, help="max time for irregular time series.")
     parser.add_argument("--embed_time", default=64, type=int, help="emdedding for time.")
