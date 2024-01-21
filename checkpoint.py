@@ -53,13 +53,18 @@ def make_save_dir(args):
                 output_dir+='cross_attn'+str(args.cross_layers)+"/"
             else:
                 output_dir+=args.cross_method+"/"
+                if args.cross_method == 'moe':
+                    output_dir += f"{args.gating_function}/"
+                    output_dir += f"{args.router_type}/"
+                    output_dir += f"top_{args.top_k}/"
+                    if args.router_type == 'disjoint':
+                        output_dir += f"disjoint_{args.disjoint_top_k}/"
 
         if args.modeltype=="Text" or args.modeltype=="TS":
             output_dir+='layer'+str(args.layers)+"/"
 
-        if  args.TS_mixup:
+        if args.TS_mixup:
             output_dir+=args.mixup_level+"/"
-        output_dir += f"{args.gating_function}/"
         
         if args.irregular_learn_emb_ts:
             output_dir+="irregular_TS_"+str(args.embed_time)+"/"
@@ -71,11 +76,15 @@ def make_save_dir(args):
         else:
             output_dir+="regular_Text/"
         if "Text" in args.modeltype:
+            if args.use_pt_text_embeddings:
+                output_dir += 'use_pt_text_embeddings/'
+            else:
+                output_dir += 'no_pt_text_embeddings/'
             output_dir+=str(args.txt_learning_rate)+"_"+str(args.num_update_bert_epochs)+"_"+str(args.bertcount)+"_"
         if "TS" in args.modeltype:
             output_dir+=str(args.ts_learning_rate)+"_"
 
-        output_dir+= str(args.num_train_epochs)+"_"+str(args.num_heads)+"_"+str(args.embed_dim)+"_"\
+        output_dir += str(args.num_train_epochs)+"_"+str(args.num_heads)+"_"+str(args.embed_dim)+"_"\
         +str(args.kernel_size)+"_"+str(args.train_batch_size)+"_"+str(args.num_of_experts)+"_"+str(args.hidden_size)+'/'
     args.ck_file_path=output_dir
     print(args.ck_file_path)
