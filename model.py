@@ -237,7 +237,7 @@ class MULTCrossModel(nn.Module):
                 self.proj2 = nn.Linear((self.d_ts+self.d_txt), (self.d_ts+self.d_txt))
                 self.out_layer = nn.Linear((self.d_ts+self.d_txt), output_dim)
             elif self.cross_method=="MAGGate":
-                self.gate_fusion=MAGGate(inp1_size=self.d_txt, inp2_size=self.d_ts, dropout=self.embed_dropout)
+                self.gate_fusion=MAGGate(inp1_size=self.d_txt, inp2_size=self.d_ts, dropout=self.dropout)
                 self.proj1 = nn.Linear(self.d_txt, self.d_txt)
                 self.proj2 = nn.Linear(self.d_txt, self.d_txt)
                 self.out_layer = nn.Linear(self.d_txt, output_dim)

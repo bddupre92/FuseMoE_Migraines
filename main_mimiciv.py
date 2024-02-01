@@ -170,6 +170,7 @@ def main():
         dev_dataloader=val_dataloader, test_data_loader=test_data_loader, device=device,\
         optimizer=optimizer,writer=writer)
     eval_test(args,model,test_data_loader, device)
+    print(f"New maximum memory allocated on GPU: {torch.cuda.max_memory_allocated(device)} bytes")
     print(f'Results saved in:\n{args.ck_file_path}')
 
 

@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=2
 
 # for mixup_level in 'batch_seq_feature'
 # do
@@ -25,17 +25,17 @@ export CUDA_VISIBLE_DEVICES=1
 # done
 
 
-python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR_Text' \
+python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_Text' \
                 --kernel_size 1 --train_batch_size 1 --eval_batch_size 8 --seed 42 \
                 --gradient_accumulation_steps 16  --num_update_bert_epochs 2 --bertcount 3 \
                 --ts_learning_rate 0.0004 --txt_learning_rate 0.00002 \
                 --notes_order 'Last' --num_of_notes 5 --max_length 1024 --layers 3\
-                --output_dir "run/TS_CXR_Text" \
+                --output_dir "run/TS_Text" \
                 --embed_dim 128 \
-                --num_modalities 3 \
+                --num_modalities 2 \
                 --model_name "bioLongformer"\
-                --task 'los-48-cxr-notes-ecg'\
-                --file_path 'Data/los'\
+                --task 'ihm-48-cxr-notes-ecg'\
+                --file_path 'Data/ihm'\
                 --num_labels 2 \
                 --num_heads 8\
                 --embed_time 64\
@@ -46,14 +46,15 @@ python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR_Text
                 --irregular_learn_emb_text \
                 --irregular_learn_emb_ts \
                 --irregular_learn_emb_cxr \
+                --irregular_learn_emb_ecg \
                 --cross_method "moe" \
-                --gating_function "laplace" \
-                --num_of_experts 12 \
+                --gating_function "softmax" \
+                --num_of_experts 5 \
                 --hidden_size 512 \
                 --top_k 4 \
                 --disjoint_top_k 2 \
                 --use_pt_text_embeddings \
-                --router_type 'disjoint' \
+                --router_type 'joint' \
                 --reg_ts
 
 # for mixup_level in 'batch' 'batch_seq' 'batch_seq_feature'
