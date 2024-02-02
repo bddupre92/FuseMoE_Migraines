@@ -12,7 +12,6 @@ from config import FuseMoEConfig
 from sparse_moe import MoE
 import sys
 import pdb
-# Code adapted from the fairseq repo.
 
 
 class Outer(nn.Module):

@@ -227,6 +227,7 @@ class MULTCrossModel(nn.Module):
             self.out_layer = nn.Linear(dim, output_dim)
         else:
             # baseline fusion methods
+            self.d_txt = args.embed_dim
             self.trans_ts_mem = self.get_network(self_type='ts_mem', layers=args.layers)
             self.trans_txt_mem = self.get_network(self_type='txt_mem', layers=args.layers)
 
@@ -480,6 +481,8 @@ class MULTCrossModel(nn.Module):
             # last_hs = torch.cat([h_txt_with_ts[-1], h_ts_with_txt[-1]], dim=1)
 
         else:
+            if 'CXR' in self.modeltype:
+                proj_x_txt = proj_x_cxr
             if self.cross_method=="MulT":
                 # ts --> txt
                 h_txt_with_ts = self.trans_txt_with_ts(proj_x_txt, proj_x_ts, proj_x_ts)
