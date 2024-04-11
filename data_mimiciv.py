@@ -305,6 +305,8 @@ def TextTSIrgcollate_fn(batch):
 
     batch = list(filter(lambda x: x is not None, batch))
     batch = list(filter(lambda x: len(x['ts']) <1000, batch))
+    if len(batch) == 0:
+        return
 
     if 'cxr_missing' in batch[0].keys():
         cxr_missing = torch.stack([torch.tensor(example["cxr_missing"]) for example in batch])

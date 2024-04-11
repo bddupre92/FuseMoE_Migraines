@@ -12,7 +12,6 @@ from config import FuseMoEConfig
 from sparse_moe import MoE
 import sys
 import pdb
-# Code adapted from the fairseq repo.
 
 
 class Outer(nn.Module):
@@ -631,7 +630,7 @@ class TransformerCrossEncoderLayer(nn.Module):
             if torch.isnan(embeddings).any():
                 return None
             # moe_out = self.moe(embeddings, self.args.gating_function)[0]
-            moe_out = self.moe(x_mod_in, self.args.gating_function, modalities=modality)[0]
+            moe_out, balance_loss = self.moe(x_mod_in, self.args.gating_function, modalities=modality)
             x_mod_out = [moe_out[:, embd_len_list[i]:embd_len_list[i + 1]] for i in range(len(embd_len_list) - 1)]
             # x_txt_moe, x_ts_moe = x_mod_out[:, :embd_len_txt], moe_output[:, embd_len_txt:]
             x_allmod_output = [torch.reshape(x, (seq_len, bs, -1)) for x in x_mod_out]
