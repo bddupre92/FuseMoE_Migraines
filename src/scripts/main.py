@@ -10,12 +10,12 @@ import warnings
 import time
 import logging
 logger = logging.getLogger(__name__)
-from model import *
-from train import *
-from checkpoint import *
-from util import *
+from core.model import *
+from core.train import *
+from utils.checkpoint import *
+from utils.util import *
 from accelerate import Accelerator
-from interp import *
+from core.interp import *
 
 
 def main():

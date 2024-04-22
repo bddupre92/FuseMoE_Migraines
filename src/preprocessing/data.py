@@ -1,11 +1,12 @@
 # import argparse
-from util import *
+from utils.util import *
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Dataset
 import os
 import pickle
 import torch
 from torch.nn.utils.rnn import pad_sequence
 import pdb
+
 
 def data_perpare(args,mode,tokenizer,data=None):
     dataset=TSNote_Irg(args,mode, tokenizer,data=data)

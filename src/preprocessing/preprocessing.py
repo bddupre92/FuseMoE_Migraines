@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import os
 import pickle
@@ -15,9 +13,6 @@ from mimic3benchmark.readers import InHospitalMortalityReader,PhenotypingReader
 from mimic3models import common_utils
 from mimic3models.preprocessing import Normalizer
 from text_utils import *
-
-
-
 
 
 class Discretizer_multi:

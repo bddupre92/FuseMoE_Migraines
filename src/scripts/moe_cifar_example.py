@@ -5,9 +5,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from config import FuseMoEConfig
-
-from sparse_moe import MoE
+from utils.config import FuseMoEConfig
+import pdb
+from core.sparse_moe import MoE
+# from hierarchical_moe import MoE, HierarchicalMoE
 
 
 class MLP(nn.Module):
@@ -45,7 +46,7 @@ classes = ('plane', 'car', 'bird', 'cat',
 
 
 if torch.cuda.is_available():
-    device = torch.device('cuda:2')
+    device = torch.device('cuda:3')
 else:
     device = torch.device('cpu')
 
@@ -59,9 +60,25 @@ config = FuseMoEConfig(
     top_k=4,
     router_type='joint',
 )
-gating = 'laplace'
+
+gating = 'softmax'
 
 net = MoE(config)
+
+# net = HierarchicalMoE(
+#     input_dim = 3072,
+#     output_dim = 10,
+#     hidden_dim = 256,
+#     num_experts = (4, 4)
+# )
+
+# net = MoE(
+#     input_dim = 3072,
+#     output_dim = 10,
+#     hidden_dim = 256,
+#     num_experts = 16
+# )
+
 net = net.to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -83,8 +100,9 @@ for epoch in range(200):  # loop over the dataset multiple times
         # forward + backward + optimize
         inputs = inputs.view(inputs.shape[0], -1)
         outputs, aux_loss = net(inputs, gating)
+        # outputs, aux_loss = net(inputs)
         # outputs = net(inputs)
-        loss = criterion(outputs, labels)
+        loss = criterion(outputs.squeeze(), labels)
         # total_loss = loss + aux_loss
         # total_loss.backward()
         loss.backward()
@@ -109,7 +127,7 @@ with torch.no_grad():
         images, labels = images.to(device), labels.to(device)
         outputs, _ = net(images.view(images.shape[0], -1), gating)
         # outputs = net(images.view(images.shape[0], -1))
-        _, predicted = torch.max(outputs.data, 1)
+        _, predicted = torch.max(outputs.squeeze().data, 1)
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 

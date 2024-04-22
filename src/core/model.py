@@ -3,9 +3,9 @@ from torch import nn
 import torch.nn.functional as F
 import sys
 import math
-from config import FuseMoEConfig
-from module import *
-from interp import *
+from utils.config import FuseMoEConfig
+from core.module import *
+from core.interp import *
 import copy
 import pdb
 
@@ -151,7 +151,7 @@ class MULTCrossModel(nn.Module):
 
         if self.irregular_learn_emb_ts or self.irregular_learn_emb_text:
             self.time_query=torch.linspace(0, 1., self.tt_max)
-            self.periodic = nn.Linear(1, args.embed_time-1)
+            self.periodic = nn.Linear(1, args.embed_time - 1)
             self.linear = nn.Linear(1, 1)
 
         if "TS" in self.modeltype:
@@ -206,7 +206,7 @@ class MULTCrossModel(nn.Module):
             if self.irregular_learn_emb_ecg:
                 self.time_attn_ecg = multiTimeAttention(256, self.d_ecg, args.embed_time, 8)
             else:
-                self.proj_cxr = nn.Conv1d(self.orig_d_ecg, self.d_ecg, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
+                self.proj_ecg = nn.Conv1d(self.orig_d_ecg, self.d_ecg, kernel_size=self.kernel_size, padding=math.floor((self.kernel_size -1) / 2), bias=False)
 
         output_dim = args.num_labels
         # if self.modeltype=="TS_Text":
@@ -357,7 +357,6 @@ class MULTCrossModel(nn.Module):
                 #TODO: what does ts_mask used for?
                 x_ts_irg = torch.cat((x_ts, x_ts_mask), 2)
                 x_ts_mask = torch.cat((x_ts_mask, x_ts_mask), 2)
-
                 proj_x_ts_irg=self.time_attn_ts(time_query, time_key_ts, x_ts_irg, x_ts_mask)
                 proj_x_ts_irg=proj_x_ts_irg.transpose(0, 1)
 
@@ -368,7 +367,7 @@ class MULTCrossModel(nn.Module):
                 proj_x_ts_reg = proj_x_ts_reg.permute(2, 0, 1)
 
             if self.TS_mixup:
-                # TODO: replace self.moe with sparse gated MoE?
+                # TODO: should we cluster reg or irg time series or both, check original paper?
                 if self.mixup_level=='batch':
                     g_irg=torch.max(proj_x_ts_irg, dim=0).values
                     g_reg =torch.max(proj_x_ts_reg, dim=0).values
@@ -452,7 +451,7 @@ class MULTCrossModel(nn.Module):
                 proj_x_ecg=proj_x_ecg.transpose(0, 1)
             else:
                 ecg_feats = ecg_feats.transpose(1, 2)
-                proj_x_ecg = ecg_feats if self.orig_d_ecg == self.d_ecg else self.proj_cxr(ecg_feats)
+                proj_x_ecg = ecg_feats if self.orig_d_ecg == self.d_ecg else self.proj_ecg(ecg_feats)
                 proj_x_ecg = proj_x_ecg.permute(2, 0, 1)
             
             if ecg_missing is None or torch.all(ecg_missing == 0):

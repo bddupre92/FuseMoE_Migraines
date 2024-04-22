@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
 import numpy as np
-from activations import ACT2FN
-from config import FuseMoEConfig
+from core.activations import ACT2FN
+from utils.config import FuseMoEConfig
 import pdb
 
 class SparseDispatcher(object):

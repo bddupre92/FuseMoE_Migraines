@@ -1,6 +1,5 @@
-
-from checkpoint import *
-from util import *
+from utils.checkpoint import *
+from utils.util import *
 from tqdm import tqdm
 from sklearn.metrics import  roc_auc_score, precision_recall_curve,  auc, f1_score
 import warnings 

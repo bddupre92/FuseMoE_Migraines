@@ -7,7 +7,7 @@ import pickle
 import re
 import numpy as np
 import json
-from data import *
+from preprocessing.data import *
 import statistics as stat
 logger = None
 import  argparse

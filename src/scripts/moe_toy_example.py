@@ -9,9 +9,10 @@ import torch
 from torch import nn
 from torch.optim import Adam
 import pdb
-from config import FuseMoEConfig
+from utils.config import FuseMoEConfig
 
-from sparse_moe import MoE
+# from core.sparse_moe import MoE
+from core.hierarchical_moe import MoE, HierarchicalMoE
 
 
 
@@ -64,15 +65,25 @@ else:
     device = torch.device('cpu')
 
 # instantiate the MoE layer
-model = MoE(input_size, num_classes, num_experts, hidden_size, k=k, noisy_gating=True)
+model = HierarchicalMoE(
+    input_dim = 512,
+    num_experts = (4, 4)
+)
+
+# model = MoE(
+#     dim = 512
+# )
+
 model = model.to(device)
 loss_fn = nn.CrossEntropyLoss()
 optim = Adam(model.parameters())
 
-x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
-
-# train
-model = train(x.to(device), y.to(device), model, loss_fn, optim)
-# evaluate
-x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
-eval(x.to(device), y.to(device), model, loss_fn)
+# x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
+x = torch.randn(4, 1024, 512).to(device)
+out, aux_loss = model(x)
+pdb.set_trace()
+# # train
+# model = train(x.to(device), y.to(device), model, loss_fn, optim)
+# # evaluate
+# x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
+# eval(x.to(device), y.to(device), model, loss_fn)

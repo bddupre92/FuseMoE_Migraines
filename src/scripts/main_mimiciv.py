@@ -8,92 +8,26 @@ from tensorboardX import SummaryWriter
 
 import warnings
 import time
+import sys
 import logging
+import os
 logger = logging.getLogger(__name__)
-from model import *
-from train import *
-from checkpoint import *
-from util import *
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.model import *
+from core.train import *
+from utils.checkpoint import *
+from utils.util import *
 from accelerate import Accelerator
-from interp import *
-
-
+from core.interp import *
 
 
 class Struct(object):
     def __init__(self, **entries):
         self.__dict__.update(entries)
 
-def main():
-    # args = {
-    #     "task": "ihm-48-cxr-notes-ecg",
-    #     "modeltype": "TS_CXR_Text_ECG",
-    #     "file_path": "/cis/home/charr165/Documents/multimodal/preprocessing",
-    #     "output_dir": "Checkpoints",
-    #     "tensorboard_dir": None,
-    #     "seed": 42,
-    #     "mode": "train",
-    #     "eval_score": ['auc', 'auprc', 'f1'],
-    #     "num_labels": 2,
-    #     "max_length": 128,
-    #     "pad_to_max_length": False,  # default for action='store_true' is False
-    #     "model_path": None,
-    #     "train_batch_size": 8,
-    #     "eval_batch_size": 32,
-    #     "num_update_bert_epochs": 10,
-    #     "num_train_epochs": 6,
-    #     "txt_learning_rate": 5e-5,
-    #     "ts_learning_rate": 0.0004,
-    #     "gradient_accumulation_steps": 1,
-    #     "weight_decay": 0.01,
-    #     "lr_scheduler_type": "linear",
-    #     "pt_mask_ratio": 0.15,
-    #     "mean_mask_length": 3,
-    #     "chunk": False,
-    #     "chunk_type": 'sent_doc_pos',
-    #     "warmup_proportion": 0.10,
-    #     "kernel_size": 1,
-    #     "num_heads": 8,
-    #     "layers": 3,
-    #     "cross_layers": 3,
-    #     "embed_dim": 128,
-    #     "irregular_learn_emb_ts": True,
-    #     "irregular_learn_emb_text": True,
-    #     "reg_ts": True,
-    #     "tt_max": 48,
-    #     "embed_time": 64,
-    #     "ts_to_txt": False,
-    #     "txt_to_ts": False,
-    #     "dropout": 0.10,
-    #     "model_name": 'BioBert',
-    #     "num_of_notes": 5,
-    #     "notes_order": None,
-    #     "ratio_notes_order": None,
-    #     "bertcount": 3,
-    #     "first_n_item": 3,
-    #     "fine_tune": False,
-    #     "TS_mixup": True,
-    #     "mixup_level": 'batch',
-    #     "fp16": False,
-    #     "debug": False,
-    #     "generate_data": False,
-    #     "FTLSTM": False,
-    #     "Interp": False,
-    #     "cpu": False,
-    #     "datagereate_seed": 42,
-    #     "TS_model": 'Atten',
-    #     "cross_method": 'self_cross',
-    #     # "debug": True,
-    #     "gating_function": 'laplace',
-    #     "num_of_experts": 12,
-    #     "hidden_size": 512,
-    #     "top_k": 4,
-    #     "irregular_learn_emb_cxr": True,
-    #     "use_pt_text_embeddings": True,
-    #     "num_modalities": 4
-    # }
 
-    # args = Struct(**args)
+def main():
 
     args = parse_args()
 
@@ -133,7 +67,7 @@ def main():
         else:
             BioBert, tokenizer = None, None
 
-        from data_mimiciv import data_perpare
+        from preprocessing.data_mimiciv import data_perpare
 
         train_dataset, train_sampler, train_dataloader = data_perpare(args, 'train', tokenizer)
         val_dataset, val_sampler, val_dataloader = data_perpare(args, 'val', tokenizer)

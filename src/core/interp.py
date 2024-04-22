@@ -16,7 +16,7 @@ from transformers import (AutoTokenizer,
                           set_seed,
                           BertPreTrainedModel
                          )
-from module import *
+from core.module import *
 
 
 def hold_out(mask, perc=0.2):
@@ -122,6 +122,8 @@ class S_Interp(nn.Module):
         rep1 = torch.cat([y, w, y_trans], dim= 1)
 
         return rep1
+
+
 class Cross_Interp(nn.Module):
     def __init__( self,args,device,orig_d_ts):
         super(Cross_Interp, self).__init__()
