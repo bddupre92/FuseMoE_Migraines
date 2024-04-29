@@ -93,6 +93,7 @@ class Experts(nn.Module):
 
 # TODO: extend this to top-N gating function, at least for level 2, but we stick with 2 levels
 # TODO: compare this with sparse MoE on performance and time in CIFAR and MIMIC, think of ways to optimize computation of HME
+# TODO: how to adapt sparse_moe in sequential input
 
 class Top2Gating(nn.Module):
     def __init__(
@@ -153,7 +154,7 @@ class Top2Gating(nn.Module):
         gate_1, index_1 = top1(raw_gates)
         mask_1 = F.one_hot(index_1, num_gates).float()
         density_1_proxy = raw_gates
-
+        pdb.set_trace()
         if importance is not None:
             equals_one_mask = (importance == 1.).float()
             # added an extra dimension on mask
@@ -368,6 +369,7 @@ class HierarchicalMoE(nn.Module):
         dispatch_tensor_inner, combine_tensor_inner, loss_inner = self.gate_inner(expert_inputs_outer, importance = importance)
         # further dispatch input for lower-level, partition in a relatively fine-grained degree
         # since taking into account the extra high-level top-2 information, this is an extra dimension
+        # the extra dimension e is the number of gates in the first level
         expert_inputs = torch.einsum('ebnd,ebnfc->efbcd', expert_inputs_outer, dispatch_tensor_inner)
 
         # Now feed the expert inputs through the experts.

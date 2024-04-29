@@ -5,10 +5,14 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from utils.config import FuseMoEConfig
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pdb
-from core.sparse_moe import MoE
-# from hierarchical_moe import MoE, HierarchicalMoE
+from core.hme import HierarchicalMoE
+from utils.config import MoEConfig
+# from core.hierarchical_moe import MoE, HierarchicalMoE
 
 
 class MLP(nn.Module):
@@ -50,20 +54,19 @@ if torch.cuda.is_available():
 else:
     device = torch.device('cpu')
 
-# net = MoE(input_size=3072, output_size=10, num_experts=5, hidden_size=256, noisy_gating=True, k=4)
-# net = MLP(input_size=3072, output_size=10, hidden_size=256)
-config = FuseMoEConfig(
-    num_experts=5,
+config = MoEConfig(
+    num_experts=(3, 5),
     moe_input_size=3072,
     moe_hidden_size=256,
     moe_output_size=10,
-    top_k=4,
+    top_k=(2, 2),
     router_type='joint',
+    gating=('softmax' ,'softmax')
 )
 
-gating = 'softmax'
+# gating = 'softmax'
 
-net = MoE(config)
+net = HierarchicalMoE(config)
 
 # net = HierarchicalMoE(
 #     input_dim = 3072,
@@ -99,7 +102,7 @@ for epoch in range(200):  # loop over the dataset multiple times
 
         # forward + backward + optimize
         inputs = inputs.view(inputs.shape[0], -1)
-        outputs, aux_loss = net(inputs, gating)
+        outputs, aux_loss = net(inputs)
         # outputs, aux_loss = net(inputs)
         # outputs = net(inputs)
         loss = criterion(outputs.squeeze(), labels)
@@ -125,7 +128,7 @@ with torch.no_grad():
     for data in testloader:
         images, labels = data
         images, labels = images.to(device), labels.to(device)
-        outputs, _ = net(images.view(images.shape[0], -1), gating)
+        outputs, _ = net(images.view(images.shape[0], -1))
         # outputs = net(images.view(images.shape[0], -1))
         _, predicted = torch.max(outputs.squeeze().data, 1)
         total += labels.size(0)

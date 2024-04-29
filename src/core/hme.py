@@ -11,10 +11,10 @@
 import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
-import numpy as np
 from core.activations import ACT2FN
 from utils.config import MoEConfig
 import pdb
+
 
 class SparseDispatcher(object):
     """Helper for implementing a mixture of experts.
@@ -47,26 +47,21 @@ class SparseDispatcher(object):
     `Tensor`s for expert i only the batch elements for which `gates[b, i] > 0`.
     """
 
-    def __init__(self, num_experts, gates, router_type):
+    def __init__(self, num_experts, gates):
         """Create a SparseDispatcher."""
-        # each forward pass initialize the sparse dispatcher once
+
         self._gates = gates
         self._num_experts = num_experts
-        self._router_type = router_type
         # sort experts
         sorted_experts, index_sorted_experts = torch.nonzero(gates).sort(0)
         # drop indices
         _, self._expert_index = sorted_experts.split(1, dim=1)
         # get according batch index for each expert
-        # _batch_index: sample index inside a batch that is assigned to particular expert, concatenated
         self._batch_index = torch.nonzero(gates)[index_sorted_experts[:, 1], 0]
         # calculate num samples that each expert gets
         self._part_sizes = (gates > 0).sum(0).tolist()
         # expand gates to match with self._batch_index
-        # from e.g., [64, 4] -> [256, 4], collection of samples assigned to each gate
         gates_exp = gates[self._batch_index.flatten()]
-        # difference between torch.nonzero(gates) and self._nonzero_gates
-        # the first one is index and the second one is actural weights!
         self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
 
     def dispatch(self, inp):
@@ -83,8 +78,6 @@ class SparseDispatcher(object):
         # assigns samples to experts whose gate is nonzero
 
         # expand according to batch index so we can just split by _part_sizes
-        if isinstance(inp, list) and self._router_type == 'joint':
-            inp = torch.concat(inp, dim=1)
         inp_exp = inp[self._batch_index].squeeze(1)
         return torch.split(inp_exp, self._part_sizes, dim=0)
 
@@ -102,18 +95,14 @@ class SparseDispatcher(object):
           a `Tensor` with shape `[batch_size, <extra_output_dims>]`.
         """
         # apply exp to expert outputs, so we are not longer in log space
-        # concat all sample outputs from each expert
-        stitched = torch.cat(expert_out, 0).exp()
+        stitched = torch.cat(expert_out, 0)
+
         if multiply_by_gates:
             stitched = stitched.mul(self._nonzero_gates)
         zeros = torch.zeros(self._gates.size(0), expert_out[-1].size(1), requires_grad=True, device=stitched.device)
         # combine samples that have been processed by the same k experts
-        # this is the weighted combination step
         combined = zeros.index_add(0, self._batch_index, stitched.float())
-        # add eps to all zero values in order to avoid nans when going back to log space
-        combined[combined == 0] = np.finfo(float).eps
-        # back to log space
-        return combined.log()
+        return combined
 
     def expert_to_gates(self):
         """Gate values corresponding to the examples in the per-expert `Tensor`s.
@@ -143,9 +132,9 @@ class MLP(nn.Module):
         return out
 
 
-class MoE(nn.Module):
+class HierarchicalMoE(nn.Module):
 
-    """Call a Sparsely gated mixture of experts layer with 1-layer Feed-Forward networks as experts.
+    """Implementation of Hierarchcial Mixture-of-Experts (HME) with two levels.
     Args:
     input_size: integer - size of the input
     output_size: integer - size of the input
@@ -156,44 +145,28 @@ class MoE(nn.Module):
     """
 
     def __init__(self, config: MoEConfig):
-        super(MoE, self).__init__()
+        super(HierarchicalMoE, self).__init__()
         self.noisy_gating = config.noisy_gating
-        self.num_experts = config.num_experts
+        
         self.output_size = config.moe_output_size
         self.input_size = config.moe_input_size
         self.hidden_size = config.moe_hidden_size
-        self.k = config.top_k
-        self.disjoint_k = config.disjoint_top_k
         self.router_type = config.router_type
         self.num_modalities = config.num_modalities
+        self.num_experts = config.num_experts
+        self.k = config.top_k
         self.gating = config.gating
-
         # instantiate experts
-        if self.router_type == 'disjoint':
-            self.w_gate = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts//self.num_modalities), requires_grad=True) for _ in range(self.num_modalities)]
-            self.w_noise = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts//self.num_modalities), requires_grad=True) for _ in range(self.num_modalities)]
-        elif self.router_type == 'permod':
-            self.w_gate = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts), requires_grad=True) for _ in range(self.num_modalities)]
-            self.w_noise = [nn.Parameter(torch.zeros(self.input_size//self.num_modalities, self.num_experts), requires_grad=True) for _ in range(self.num_modalities)]
-        else:
-            self.w_gate = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
-            self.w_noise = nn.Parameter(torch.zeros(self.input_size, self.num_experts), requires_grad=True)
-        if self.router_type == 'disjoint':
-            self.experts = nn.ModuleList(
-                nn.ModuleList([MLP(config, self.input_size//self.num_modalities, self.output_size, self.hidden_size) for _ in range(self.num_experts//self.num_modalities)])
-                for _ in range(self.num_modalities)
-            )
-        elif self.router_type == 'permod':
-            self.experts = nn.ModuleList([MLP(config, self.input_size//self.num_modalities, self.output_size, self.hidden_size) for _ in range(self.num_experts)])
-        else:
-            self.experts = nn.ModuleList([MLP(config, self.input_size, self.output_size, self.hidden_size) for _ in range(self.num_experts)])
-        
+        self.experts = nn.ModuleList(
+            nn.ModuleList([MLP(config, self.input_size, self.output_size, self.hidden_size) for _ in range(self.num_experts[1])])
+            for _ in range(self.num_experts[0])
+        )
         self.softplus = nn.Softplus()
         self.softmax = nn.Softmax(1)
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
-
-        assert(self.k <= self.num_experts)
+        assert(self.k[0] <= self.num_experts[0])
+        assert(self.k[1] <= self.num_experts[1])
 
     def cv_squared(self, x):
         """The squared coefficient of variation of a sample.
@@ -207,8 +180,9 @@ class MoE(nn.Module):
         """
         eps = 1e-10
         # if only num_experts = 1
+
         if x.shape[0] == 1:
-            return torch.Tensor([0], device=x.device, dtype=x.dtype)
+            return torch.tensor([0], device=x.device, dtype=x.dtype)
         return x.float().var() / (x.float().mean()**2 + eps)
 
     def _gates_to_load(self, gates):
@@ -221,7 +195,7 @@ class MoE(nn.Module):
         """
         return (gates > 0).sum(0)
 
-    def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values):
+    def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values, level):
         """Helper function to NoisyTopKGating.
         Computes the probability that value is in top k, given different random noise.
         This gives us a way of backpropagating from a loss that balances the number
@@ -238,39 +212,30 @@ class MoE(nn.Module):
         Returns:
         a `Tensor` of shape [batch, n].
         """
-
         batch = clean_values.size(0)
         m = noisy_top_values.size(1)
         top_values_flat = noisy_top_values.flatten()
 
-        if self.router_type == 'disjoint':
-            threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.disjoint_k
-        else:
-            threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k
+        threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k[level]
         threshold_if_in = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_in), 1)
         is_in = torch.gt(noisy_values, threshold_if_in)
         threshold_positions_if_out = threshold_positions_if_in - 1
         threshold_if_out = torch.unsqueeze(torch.gather(top_values_flat, 0, threshold_positions_if_out), 1)
         # is each value currently in the top k.
         normal = Normal(self.mean, self.std)
-
         prob_if_in = normal.cdf((clean_values - threshold_if_in)/noise_stddev)
         prob_if_out = normal.cdf((clean_values - threshold_if_out)/noise_stddev)
         prob = torch.where(is_in, prob_if_in, prob_if_out)
         return prob
 
-    def _get_logits(self, x, train, noise_epsilon, idx=None):
-        if idx is not None:
-            w_gate = self.w_gate[idx].to(x.device)
-            w_noise = self.w_noise[idx].to(x.device)
-        else:
-            w_gate = self.w_gate
-            w_noise = self.w_noise
-        if self.gating == 'softmax':
+    def _get_logits(self, x, train, level, noise_epsilon):
+        w_gate = nn.Parameter(torch.zeros(self.input_size, self.num_experts[level]), requires_grad=True).to(x.device)
+        w_noise = nn.Parameter(torch.zeros(self.input_size, self.num_experts[level]), requires_grad=True).to(x.device)
+        if self.gating[level] == 'softmax':
             clean_logits = x @ w_gate
-        elif self.gating == 'laplace':
+        elif self.gating[level] == 'laplace':
             clean_logits = -torch.cdist(x, torch.t(w_gate))
-        elif self.gating == 'gaussian':
+        elif self.gating[level] == 'gaussian':
             clean_logits = -torch.pow(torch.cdist(x, torch.t(w_gate)), 2)
 
         if self.noisy_gating:
@@ -282,91 +247,81 @@ class MoE(nn.Module):
             logits = clean_logits
         return logits, clean_logits, noisy_logits, noise_stddev
 
-    def _top_k_gating(self, logits, clean_logits, noisy_logits, noise_stddev, k):
-        top_logits, top_indices = logits.topk(min(k + 1, self.num_experts), dim=1)
-        top_k_logits = top_logits[:, :k]
-        top_k_indices = top_indices[:, :k]
-        if self.gating == 'softmax':
+    def _top_k_gating(self, logits, clean_logits, noisy_logits, noise_stddev, level):
+        top_logits, top_indices = logits.topk(min(self.k[level] + 1, self.num_experts[level]), dim=1)
+        top_k_logits = top_logits[:, :self.k[level]]
+        top_k_indices = top_indices[:, :self.k[level]]
+        if self.gating[level] == 'softmax':
             top_k_gates = self.softmax(top_k_logits)
-        elif self.gating == 'laplace' or self.gating == 'gaussian':
+        elif self.gating[level] == 'laplace' or self.gating[level] == 'gaussian':
             top_k_gates = torch.exp(top_k_logits - torch.logsumexp(top_k_logits, dim=1, keepdim=True))
 
         zeros = torch.zeros_like(logits, requires_grad=True)
+        # map the sorted gate to their original positions
+        # obtain gating weights with expert position information
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
-        if self.noisy_gating and k < self.num_experts:
-            load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)).sum(0)
+        if self.noisy_gating and self.k[level] < self.num_experts[level]:
+            load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits, level)).sum(0)
         else:
             load = self._gates_to_load(gates)
         return gates, load
 
-    def noisy_top_k_gating(self, x, train, noise_epsilon=1e-2, modalities=None):
-        """Multimodal noisy top-k gating.
+    def noisy_top_k_gating(self, x, train, level, noise_epsilon=1e-2):
+        """Noisy top-k gating.
           See paper: https://arxiv.org/abs/1701.06538.
           Args:
             x: input Tensor with shape [batch_size, input_size]
             train: a boolean - we only add noise at training time.
+            level: int - 0 indicates outer, 1 indicates inner
             noise_epsilon: a float
           Returns:
             gates: a Tensor with shape [batch_size, num_experts]
             load: a Tensor with shape [num_experts]
         """
-
-        if self.router_type == 'joint':
-            if isinstance(x, list):
-                embeddings = torch.concat(x, dim=1)
-            else:
-                embeddings = x
-            all_logits = self._get_logits(embeddings, train, noise_epsilon)
-            logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
-            gates, load = self._top_k_gating(logits, clean_logits, noisy_logits, noise_stddev, self.k)
-            return gates, load
-        else:
-            all_gates, all_loads = [], []
-            for i in range(self.num_modalities):
-                all_logits = self._get_logits(x[i], train, noise_epsilon, idx=i)
-                logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
-                if self.router_type == 'permod':
-                    gates, load = self._top_k_gating(logits, clean_logits, noisy_logits, noise_stddev, self.k)
-                else:
-                    gates, load = self._top_k_gating(logits, clean_logits, noisy_logits, noise_stddev, self.disjoint_k)
-                all_gates.append(gates)
-                all_loads.append(load)
-            return all_gates, all_loads
+        all_logits = self._get_logits(x, train, level, noise_epsilon)
+        logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
+        gates, load = self._top_k_gating(logits, clean_logits, noisy_logits, noise_stddev, level)
+        
+        # calculate importance loss
+        importance = gates.sum(0)
+        loss = self.cv_squared(importance) + self.cv_squared(load)
+        return gates, loss
 
     def forward(self, x, train=True, loss_coef=1e-2, modalities=None):
         """Args:
         x: tensor shape [batch_size, input_size]
-        gating: type of gating function
         train: a boolean scalar.
         loss_coef: a scalar - multiplier on load-balancing losses
+
         Returns:
         y: a tensor with shape [batch_size, output_size].
         extra_training_loss: a scalar.  This should be added into the overall
         training loss of the model.  The backpropagation of this loss
         encourages all experts to be approximately equally used across a batch.
         """
-        gates, load = self.noisy_top_k_gating(x, train, modalities=modalities)
-        # calculate importance loss
-        if isinstance(gates, list):
-            loss, y, sub_experts = 0, 0, self.num_experts//self.num_modalities
-            for g, l in zip(gates, load):
-                loss += self.cv_squared(g.sum(0)) + self.cv_squared(l)
-            loss *= loss_coef
-            for j, g in enumerate(gates):
-                dispatcher = SparseDispatcher(self.num_experts, g, self.router_type)
-                expert_inputs = dispatcher.dispatch(x[j])
-                if self.router_type == 'permod':
-                    expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
-                elif self.router_type == 'disjoint':
-                    expert_outputs = [self.experts[j][i](expert_inputs[i]) for i in range(sub_experts)]
-                y += dispatcher.combine(expert_outputs)
-        else:
-            loss = self.cv_squared(gates.sum(0)) + self.cv_squared(load)
-            loss *= loss_coef
-            dispatcher = SparseDispatcher(self.num_experts, gates, self.router_type)
-            expert_inputs = dispatcher.dispatch(x)
-            # gates = dispatcher.expert_to_gates() # how is this line be used?
-            expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
-            y = dispatcher.combine(expert_outputs)
-        return y, loss
+        if isinstance(x, list):
+            x = torch.concat(x, dim=1)
+
+        gates_outer, loss_outer = self.noisy_top_k_gating(x, train, 0)
+        loss_outer *= loss_coef
+
+        dispatcher_outer = SparseDispatcher(self.num_experts[0], gates_outer)
+        expert_inputs_outer = dispatcher_outer.dispatch(x)
+
+        all_inner_loss, all_expert_group_output = 0, []
+        for j, exp_inp in enumerate(expert_inputs_outer):
+            # TODO: importance weighting in this line
+            # sequential input inside top_k gating and dispatcher
+            gates_inner, loss_inner = self.noisy_top_k_gating(exp_inp, train, 1)
+            all_inner_loss += loss_inner
+            dispatcher_inner = SparseDispatcher(self.num_experts[1], gates_inner)
+            expert_inputs_inner = dispatcher_inner.dispatch(exp_inp)
+            # TODO: add refactoring code here if needed
+            expert_outputs_inner = [self.experts[j][i](expert_inputs_inner[i]) for i in range(self.num_experts[1])]
+            all_expert_group_output.append(dispatcher_inner.combine(expert_outputs_inner))
+
+        all_inner_loss /= self.num_experts[0]
+        all_inner_loss *= loss_coef
+        y = dispatcher_outer.combine(all_expert_group_output)
+        return y, loss_outer + all_inner_loss

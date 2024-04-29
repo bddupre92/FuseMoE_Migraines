@@ -3,7 +3,6 @@ from torch import nn
 import torch.nn.functional as F
 import sys
 import math
-from utils.config import FuseMoEConfig
 from core.module import *
 from core.interp import *
 import copy
@@ -210,7 +209,7 @@ class MULTCrossModel(nn.Module):
 
         output_dim = args.num_labels
         # if self.modeltype=="TS_Text":
-        if self.cross_method in ["self_cross", "moe", "moe_cross"]:
+        if self.cross_method in ["self_cross", "moe", "hme"]:
             self.trans_self_cross_ts_txt = self.get_cross_network(args, layers=args.cross_layers)
             dim = 0
             if "TS" in self.modeltype:
@@ -463,7 +462,7 @@ class MULTCrossModel(nn.Module):
                 proj_x_ecg[:, missing_indices, :] = torch.zeros((self.args.tt_max, len(missing_indices), self.args.embed_dim), dtype=torch.float16, device=x_ts.device)
             mod_count += 1
 
-        if self.cross_method in ["self_cross", "moe", "moe_cross"]:
+        if self.cross_method in ["self_cross", "moe", "hme"]:
             if self.modeltype == "TS_Text":
                 hiddens = self.trans_self_cross_ts_txt([proj_x_txt, proj_x_ts], ['txt', 'ts'])
             elif self.modeltype == "TS_CXR":

@@ -8,8 +8,9 @@ import numpy as np
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
-from utils.config import FuseMoEConfig
+from utils.config import MoEConfig
 from core.sparse_moe import MoE
+from core.hme import HierarchicalMoE
 import sys
 import pdb
 
@@ -111,7 +112,6 @@ class TimeSeriesCnnModel(nn.Module):
         self.fc1 = nn.Linear(int(length * n_filters / (2**layers)), n_neurons)
         self.fc1_drop = nn.Dropout(dropout)
 
-
     def forward(self, x):
         if self.layers>=1:
             x = self.pool1(F.relu(self.conv1(x)))
@@ -119,7 +119,7 @@ class TimeSeriesCnnModel(nn.Module):
             x = self.pool2(F.relu(self.conv2(x)))
         if self.layers>=3:
             x = self.pool3(F.relu(self.conv3(x)))
-        # import pdb; pdb.set_trace()
+
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1_drop(self.fc1(x)))
 
@@ -158,7 +158,6 @@ class multiTimeAttention(nn.Module):
         p_attn = F.softmax(scores, dim = -2)
         if dropout is not None:
             p_attn=F.dropout(p_attn, p=dropout, training=self.training)
-#             p_attn = dropout(p_attn)
         return torch.sum(p_attn*value.unsqueeze(-3), -2), p_attn
 
     def forward(self, query, key, value, mask=None, dropout=0.1):
@@ -510,20 +509,13 @@ class TransformerCrossEncoder(nn.Module):
         lengths, positions = [], []
         for i in range(self.num_modalities):
             lengths.append(x_list[i].size(0))
-        # length_x1 = x_list[0].size(0) # (length,Batch_size,input_dim)
-        # length_x2 = x_list[1].size(0)
         x_list = [self.embed_scale * x_in for x_in in x_in_list]
         if self.q_seq_len_1 is not None:
             for length in lengths:
                 positions.append(torch.tensor(torch.arange(length),dtype=torch.long).to(self.device))
-            # position_x1 = torch.tensor(torch.arange(length_x1),dtype=torch.long).to(self.device)
-            # position_x2 = torch.tensor(torch.arange(length_x2),dtype=torch.long).to(self.device)
-            # positions = [position_x1 ,position_x2]
             x_list = [l(position_x).unsqueeze(0).transpose(0,1) + x for l, x, position_x in zip(self.embed_positions_q, x_list, positions)]
               # Add positional embedding
             x_list = [F.dropout(x, p=self.dropout, training=self.training) for x in x_list]
-        # x_list[0] = F.dropout(x_list[0], p=self.dropout, training=self.training)
-        # x_list[1] = F.dropout(x_list[1], p=self.dropout, training=self.training)
         # encoder layers
         for layer in self.layers:
             x_list = layer(x_list, modality) #proj_x_txt, proj_x_ts
@@ -578,18 +570,32 @@ class TransformerCrossEncoderLayer(nn.Module):
         self.fc1 = nn.ModuleList([nn.Linear(self.embed_dim, 4 * self.embed_dim) for _ in range(num_modalities)])  # The "Add & Norm" part in the paper
         self.fc2 = nn.ModuleList([nn.Linear(4 * self.embed_dim, self.embed_dim) for _ in range(num_modalities)])
         self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-        moe_config = FuseMoEConfig(
-                        num_experts=args.num_of_experts,
-                        moe_input_size=args.tt_max * args.embed_dim * num_modalities,
-                        moe_hidden_size=args.hidden_size,
-                        moe_output_size=args.tt_max * args.embed_dim * num_modalities,
-                        top_k=args.top_k,
-                        router_type=args.router_type,
-                        num_modalities=args.num_modalities
-                        )
-        self.moe = MoE(moe_config)
-        self.moe = self.moe.to('cuda:0')
-
+        
+        if args.cross_method == 'moe':
+            moe_config = MoEConfig(
+            num_experts=args.num_of_experts[0],
+            moe_input_size=args.tt_max * args.embed_dim * num_modalities,
+            moe_hidden_size=args.hidden_size,
+            moe_output_size=args.tt_max * args.embed_dim * num_modalities,
+            top_k=args.top_k[0],
+            router_type=args.router_type,
+            num_modalities=args.num_modalities,
+            gating=args.gating_function[0])
+            self.moe = MoE(moe_config)
+            self.moe = self.moe.to('cuda:0')
+        elif args.cross_method == 'hme':
+            moe_config = MoEConfig(
+            num_experts=args.num_of_experts,
+            moe_input_size=args.tt_max * args.embed_dim * num_modalities,
+            moe_hidden_size=args.hidden_size,
+            moe_output_size=args.tt_max * args.embed_dim * num_modalities,
+            top_k=args.top_k,
+            router_type=args.router_type,
+            num_modalities=args.num_modalities,
+            gating=args.gating_function)
+            self.moe = HierarchicalMoE(moe_config)
+            self.moe = self.moe.to('cuda:0')
+        
     def forward(self, x_list, modality):
         """
         Args:
@@ -610,37 +616,23 @@ class TransformerCrossEncoderLayer(nn.Module):
         # filter out attn_weights
         x_list = [x for x, _ in output]
         x_list = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_list]
-        # x_list[0] = F.dropout(x_list[0], p=self.res_dropout, training=self.training)
-        # x_list[1] = F.dropout(x_list[1], p=self.res_dropout, training=self.training)
-
         x_list = [r + x for r, x in zip(residual, x_list)]
-#         x_list = [l(x) for l, x in zip(self.post_self_attn_layer_norm, x_list)]
 
-        #### moe or cross attn
+        # moe or cross attn
         residual = x_list
         x_list = [l(x) for l, x in zip(self.pre_encoder_attn_layer_norm, x_list)]
-        if self.args.cross_method == "moe":
+        if self.args.cross_method in ["moe", "hme"]:
             x_mod_in = [torch.reshape(x, (bs, -1)) for x in x_list]
             embd_len_list = [0] + list(np.cumsum([x.shape[1] for x in x_mod_in]))
-            # x_txt_2d = torch.reshape(x_list[0], (bs, -1))
-            # x_ts_2d = torch.reshape(x_list[1], (bs, -1))
-            # embd_len_txt = x_txt_2d.shape[1]
-            # embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
             embeddings = torch.concat(x_mod_in, dim=1)
             if torch.isnan(embeddings).any():
                 return None
-            # moe_out = self.moe(embeddings, self.args.gating_function)[0]
-            moe_out, balance_loss = self.moe(x_mod_in, self.args.gating_function, modalities=modality)
+            # just replace this with hierarchical moe
+            moe_out, balance_loss = self.moe(x_mod_in, modalities=modality)
             x_mod_out = [moe_out[:, embd_len_list[i]:embd_len_list[i + 1]] for i in range(len(embd_len_list) - 1)]
-            # x_txt_moe, x_ts_moe = x_mod_out[:, :embd_len_txt], moe_output[:, embd_len_txt:]
             x_allmod_output = [torch.reshape(x, (seq_len, bs, -1)) for x in x_mod_out]
             moe_output = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_allmod_output]
             x_list = [r + x for r, x in zip(residual, moe_output)]
-            # x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))
-            # x_ts_moe_output = torch.reshape(x_ts_moe, (seq_len, bs, -1))
-            # x_txt_moe_output = F.dropout(x_txt_moe_output, p=self.res_dropout, training=self.training)
-            # x_ts_moe_output = F.dropout(x_ts_moe_output, p=self.res_dropout, training=self.training)
-            # x_list = [r + x for r, x in zip(residual, (x_txt_moe_output, x_ts_moe_output))]
 
         # pay attention to how the text and patch embeddings are concated in LIMOE
         # LIMOE just concat? add modality type embeddings
@@ -648,55 +640,21 @@ class TransformerCrossEncoderLayer(nn.Module):
         if self.args.cross_method == "self_cross":
             assert self.num_modalities == 2, 'Input modality should be 2 if using cross attention method.'
             x_txt, x_ts = x_list #proj_x_txt, proj_x_ts
-            # cross: ts -> txt
             x_ts_to_txt, _ = self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
-            # cross: txt->ts
             x_txt_to_ts, _ = self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
 
             x_ts_to_txt = F.dropout(x_ts_to_txt, p=self.res_dropout, training=self.training)
             x_txt_to_ts = F.dropout(x_txt_to_ts, p=self.res_dropout, training=self.training)
             x_list = [r+ x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
 
-        if self.args.cross_method == "moe_cross":
-            assert self.num_modalities == 2, 'Input modality should be 2 if using cross attention method.'
-            x_txt, x_ts = x_list
-            x_ts_to_txt, _ = self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
-            x_txt_to_ts, _ = self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
-            x_txt_2d = torch.reshape(x_ts_to_txt, (bs, -1))
-            x_ts_2d = torch.reshape(x_txt_to_ts, (bs, -1))
-            embd_len_txt = x_txt_2d.shape[1]
-            embeddings = torch.concat([x_txt_2d, x_ts_2d], dim=1)
-            if torch.isnan(embeddings).any():
-                return None
-            moe_output = self.moe(embeddings, self.args.gating_function)[0]
-            x_txt_moe, x_ts_moe = moe_output[:, :embd_len_txt], moe_output[:, embd_len_txt:]
-
-            x_txt_moe_output = torch.reshape(x_txt_moe, (seq_len, bs, -1))
-            x_ts_moe_output = torch.reshape(x_ts_moe, (seq_len, bs, -1))
-            x_txt_moe_output = F.dropout(x_txt_moe_output, p=self.res_dropout, training=self.training)
-            x_ts_moe_output = F.dropout(x_ts_moe_output, p=self.res_dropout, training=self.training)
-            x_list = [r + x for r, x in zip(residual, (x_txt_moe_output, x_ts_moe_output))]
-
         # FNN
         residual = x_list
         x_list = [l(x) for l, x in zip(self.pre_ffn_layer_norm, x_list)]
         x_list = [F.relu(l(x)) for l, x in zip(self.fc1, x_list)]
-
         x_list = [F.dropout(x, p=self.relu_dropout, training=self.training) for x in x_list]
-
-        # x_list[0]=F.dropout(x_list[0], p=self.relu_dropout , training=self.training)
-        # x_list[1]=F.dropout(x_list[1], p=self.relu_dropout , training=self.training)
-
         x_list = [l(x) for l, x in zip(self.fc2, x_list)]
-
         x_list = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_list]
-        # x_list[0]=F.dropout(x_list[0], p=self.res_dropout, training=self.training)
-        # x_list[1]=F.dropout(x_list[1], p=self.res_dropout, training=self.training)
-
         x_list = [r + x  for r, x in zip(residual, x_list) ]
-
-#         x_list = [l(x) for l, x in zip(self.post_ffn_layer_norm, x_list)]
-
         return x_list
 
 

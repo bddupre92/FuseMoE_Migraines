@@ -44,7 +44,6 @@ def make_save_dir(args):
         "_"+str(args.embed_dim)+"_"+str(args.train_batch_size)+"_"+str(args.num_update_bert_epochs)+'/'
 
     else:
-
         if args.irregular_learn_emb_ts and "TS" in args.modeltype:
             output_dir+=  "TS_"+str(args.tt_max)+"/"+args.TS_model+"/"
         if args.irregular_learn_emb_text and 'Text' in args.modeltype:
@@ -61,6 +60,10 @@ def make_save_dir(args):
                     output_dir += f"top_{args.top_k}/"
                     if args.router_type == 'disjoint':
                         output_dir += f"disjoint_{args.disjoint_top_k}/"
+                if args.cross_method == 'hme':
+                    output_dir += f"{args.gating_function}/"
+                    output_dir += f"{args.num_of_experts}/"
+                    output_dir += f"top_{args.top_k}/"
 
         if args.modeltype=="Text" or args.modeltype=="TS":
             output_dir+='layer'+str(args.layers)+"/"

@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=3
 
 python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR' \
                 --kernel_size 1 --train_batch_size 1 --eval_batch_size 8 --seed 42 \
@@ -22,12 +22,12 @@ python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR' \
                 --irregular_learn_emb_ts \
                 --irregular_learn_emb_cxr \
                 --irregular_learn_emb_ecg \
-                --cross_method "moe" \
-                --gating_function "softmax" \
-                --num_of_experts 12 \
-                --hidden_size 512 \
-                --top_k 4 \
+                --cross_method "hme" \
+                --gating_function "laplace" "laplace" \
+                --num_of_experts 3 5 \
+                --top_k 2 4 \
                 --disjoint_top_k 2 \
+                --hidden_size 512 \
                 --use_pt_text_embeddings \
                 --router_type 'joint' \
                 --reg_ts

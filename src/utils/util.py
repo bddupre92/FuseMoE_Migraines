@@ -14,6 +14,7 @@ import  argparse
 import pickle
 from accelerate import Accelerator
 from sklearn import metrics
+import pdb
 
 from transformers import (AutoTokenizer,
                           AutoModel,
@@ -141,17 +142,16 @@ def parse_args():
     parser.add_argument("--datagereate_seed", type=int, default=42, help="A seed for reproducible data generation .")
     parser.add_argument("--TS_model", type=str, default='Atten', help="LSTM, CNN, Atten")
 
-    parser.add_argument("--cross_method", default='moe', type=str, help="all fusion methods: moe, moe_cross, self_cross, MAGGate, MulT, Outer, concat")
-    parser.add_argument("--gating_function", default='laplace', type=str, help="all gating functions: softmax, laplace, gaussian")
-    parser.add_argument("--num_of_experts", default=12, type=int, help="number of MLPs in MoE")
+    parser.add_argument("--cross_method", default='moe', type=str, help="all fusion methods: moe, hme, moe_cross, self_cross, MAGGate, MulT, Outer, concat")
     parser.add_argument("--hidden_size", default=512, type=int, help="hidden size of MLP second layer")
-    parser.add_argument("--top_k", default=4, type=int, help="the number of experts finally combined together for joint and permod routers")
+    parser.add_argument("--gating_function", nargs='*', type=str, help="all gating functions: softmax, laplace, gaussian, enter at least one")
+    parser.add_argument("--num_of_experts", nargs='*', type=int, help="number of MLPs in MoE, for HME need to specify each level")
+    parser.add_argument("--top_k", nargs='*', type=int, help="the number of experts finally combined together for joint and permod routers")
     parser.add_argument("--disjoint_top_k", default=2, type=int, help="the number of experts finally combined together for disjoint routers")
     parser.add_argument("--num_modalities", default=2, type=int, help="the number of input modalities used to train transformer")
     parser.add_argument("--use_pt_text_embeddings", action='store_true', help="Option to use pre-extracted text embeddings")
     parser.add_argument("--router_type", default='joint', type=str, help="all router types: joint, permod, disjoint")
     args = parser.parse_args()
-
     return args
 
 def loadBert(args,device):
@@ -163,7 +163,7 @@ def loadBert(args,device):
             config = AutoConfig.from_pretrained("allenai/biomed_roberta_base", num_labels=args.num_labels)
             tokenizer = AutoTokenizer.from_pretrained("allenai/biomed_roberta_base")
             BioBert = AutoModel.from_pretrained("allenai/biomed_roberta_base")
-        elif  args.model_name== "Bert":
+        elif args.model_name== "Bert":
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
             BioBert = BertModel.from_pretrained("bert-base-uncased")
         elif args.model_name== "bioLongformer":

@@ -1,11 +1,10 @@
 import torch.nn as nn
 
 
-
 #-------------------#
 # Config
 
-class FuseMoEConfig:
+class MoEConfig:
     def __init__(
         self, 
         num_experts, 
@@ -13,6 +12,7 @@ class FuseMoEConfig:
         moe_hidden_size,
         moe_output_size,
         router_type,
+        gating='softmax',
         num_modalities=1,
         vocab_size=100,
         num_tasks=2, 
@@ -59,6 +59,7 @@ class FuseMoEConfig:
         self.moe_output_size = moe_output_size
         self.router_type = router_type
         self.num_modalities = num_modalities
+        self.gating = gating
 
         # image
         self.image_size = image_size
@@ -91,61 +92,3 @@ class FuseMoEConfig:
         self.use_return_dict = use_return_dict
         self.is_decoder = is_decoder
     
-
-    def set_input_params(self, vocab_size, hidden_size, type_vocab_size=2, modality_type_vocab_size=2):
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.type_vocab_size = type_vocab_size
-        self.modality_type_vocab_size = modality_type_vocab_size
-    
-    def set_moe_params(
-        self, 
-        num_experts, 
-        num_tasks, 
-        moe_input_size,
-        moe_hidden_size,
-        moe_output_size,
-        router_type,
-        num_modalities,
-        top_k=4,
-        disjoint_top_k=2,
-        noisy_gating=True,
-    ):
-        self.num_experts = num_experts
-        self.num_tasks = num_tasks
-        self.top_k = top_k
-        self.disjoint_top_k = disjoint_top_k
-        self.noisy_gating = noisy_gating
-        self.moe_input_size = moe_input_size
-        self.moe_hidden_size = moe_hidden_size
-        self.moe_output_size = moe_output_size
-        self.router_type = router_type
-        self.num_modalities = num_modalities
-
-    def set_transformer_params(
-        self, 
-        hidden_dim, 
-        num_layers, 
-        dropout, 
-        pre_lnorm=True,
-        n_heads=8,
-        max_position_embeddings=512,
-        hidden_dropout_prob=0.1,
-    ):
-        self.max_position_embeddings = max_position_embeddings
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.pre_lnorm = pre_lnorm
-        self.n_heads = n_heads
-        self.d_heads = int(hidden_dim / n_heads)
-        self.hidden_dropout_prob = hidden_dropout_prob
-
-    def set_layer_norm_params(self, layer_norm_eps=1e-5):
-        self.layer_norm_eps = layer_norm_eps
-
-    def set_image_params(self, image_size=224, patch_size=16, num_channels=3, max_image_length=-1):
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.num_channels = num_channels
-        self.max_image_length = max_image_length
