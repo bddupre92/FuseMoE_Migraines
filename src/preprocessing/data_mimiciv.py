@@ -257,7 +257,6 @@ class TSNote_Irg(Dataset):
         ts=torch.tensor(ts,dtype=torch.float)
         ts_mask=torch.tensor(ts_mask,dtype=torch.long)
         ts_tt=torch.tensor([t/self.tt_max for t in ts_tt],dtype=torch.float)
-        # pdb.set_trace()
         if self.modeltype == 'TS_CXR':
             return {'idx': idx, 'ts': ts, 'ts_mask': ts_mask, 'ts_tt': ts_tt, 'reg_ts': reg_ts, "label": label, 'cxr_feats': cxr_feats, 'cxr_time': cxr_time_to_end, 'cxr_time_mask': cxr_time_mask}
         elif self.modeltype == 'TS':

@@ -605,7 +605,6 @@ class TransformerCrossEncoderLayer(nn.Module):
         Returns:
             list of encoded output of shape `(batch, src_len, embed_dim)`
         """
-        #TODO: figure out how many layers of this is required?
         residual = x_list
         seq_len, bs = x_list[0].shape[0], x_list[0].shape[1]
 
@@ -627,16 +626,12 @@ class TransformerCrossEncoderLayer(nn.Module):
             embeddings = torch.concat(x_mod_in, dim=1)
             if torch.isnan(embeddings).any():
                 return None
-            # just replace this with hierarchical moe
             moe_out, balance_loss = self.moe(x_mod_in, modalities=modality)
             x_mod_out = [moe_out[:, embd_len_list[i]:embd_len_list[i + 1]] for i in range(len(embd_len_list) - 1)]
             x_allmod_output = [torch.reshape(x, (seq_len, bs, -1)) for x in x_mod_out]
             moe_output = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_allmod_output]
             x_list = [r + x for r, x in zip(residual, moe_output)]
 
-        # pay attention to how the text and patch embeddings are concated in LIMOE
-        # LIMOE just concat? add modality type embeddings
-        # sparse attention combined with dense attention
         if self.args.cross_method == "self_cross":
             assert self.num_modalities == 2, 'Input modality should be 2 if using cross attention method.'
             x_txt, x_ts = x_list #proj_x_txt, proj_x_ts
@@ -645,7 +640,7 @@ class TransformerCrossEncoderLayer(nn.Module):
 
             x_ts_to_txt = F.dropout(x_ts_to_txt, p=self.res_dropout, training=self.training)
             x_txt_to_ts = F.dropout(x_txt_to_ts, p=self.res_dropout, training=self.training)
-            x_list = [r+ x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
+            x_list = [r + x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
 
         # FNN
         residual = x_list

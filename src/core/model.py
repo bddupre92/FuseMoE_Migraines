@@ -402,7 +402,6 @@ class MULTCrossModel(nn.Module):
                 time_key = self.learn_time_embedding(note_time_list).to(self.device)
                 if not self.irregular_learn_emb_ts:
                     time_query = self.learn_time_embedding(self.time_query.unsqueeze(0)).to(self.device)
-
                 proj_x_txt=self.time_attn_text(time_query, time_key, x_txt, note_time_mask_list)
                 proj_x_txt=proj_x_txt.transpose(0, 1)
             else:
@@ -506,6 +505,7 @@ class MULTCrossModel(nn.Module):
         last_hs_proj = self.proj2(F.dropout(F.relu(self.proj1(last_hs)), p=self.dropout, training=self.training))
         last_hs_proj += last_hs
         output = self.out_layer(last_hs_proj)
+        pdb.set_trace()
 
         if 'ihm' in self.task or 'los' in self.task:
             if labels!=None:

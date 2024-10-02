@@ -81,7 +81,7 @@ def main():
         model= TSMixed(args=args,device=device,orig_d_ts=30,orig_reg_d_ts=60, ts_seq_num=args.tt_max)
     else:
         # multimodal fusion
-        model= MULTCrossModel(args=args,device=device,orig_d_ts=30, orig_reg_d_ts=60, orig_d_txt=768,ts_seq_num=args.tt_max,text_seq_num=args.num_of_notes,Biobert=BioBert )
+        model= MULTCrossModel(args=args,device=device,orig_d_ts=30, orig_reg_d_ts=60, orig_d_txt=768,ts_seq_num=args.tt_max,text_seq_num=args.num_of_notes,Biobert=BioBert)
     print(device)
     
     # TODO: CXR learning rate
@@ -98,7 +98,7 @@ def main():
         raise ValueError("Unknown modeltype in optimizer.")
 
     model, optimizer, train_dataloader,val_dataloader,test_data_loader = \
-    accelerator.prepare(model, optimizer, train_dataloader,val_dataloader,test_data_loader)
+    accelerator.prepare(model, optimizer, train_dataloader, val_dataloader, test_data_loader)
 
     trainer_irg(model=model,args=args,accelerator=accelerator,train_dataloader=train_dataloader,\
         dev_dataloader=val_dataloader, test_data_loader=test_data_loader, device=device,\

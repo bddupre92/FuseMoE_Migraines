@@ -10,9 +10,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pdb
-from core.hme import HierarchicalMoE
+from core.hme_seq import HierarchicalMoE
 from utils.config import MoEConfig
-# from core.hierarchical_moe import MoE, HierarchicalMoE
+from core.hierarchical_moe import MoE
 
 
 class MLP(nn.Module):
@@ -59,12 +59,11 @@ config = MoEConfig(
     moe_input_size=3072,
     moe_hidden_size=256,
     moe_output_size=10,
-    top_k=(2, 2),
+    top_k=(2, 4),
     router_type='joint',
-    gating=('softmax' ,'softmax')
+    gating=('softmax' ,'softmax'),
+    noisy_gating=False
 )
-
-# gating = 'softmax'
 
 net = HierarchicalMoE(config)
 
@@ -101,7 +100,8 @@ for epoch in range(200):  # loop over the dataset multiple times
         optimizer.zero_grad()
 
         # forward + backward + optimize
-        inputs = inputs.view(inputs.shape[0], -1)
+        pdb.set_trace()
+        inputs = inputs.view(inputs.shape[0], -1) # check this!
         outputs, aux_loss = net(inputs)
         # outputs, aux_loss = net(inputs)
         # outputs = net(inputs)

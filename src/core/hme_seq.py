@@ -53,17 +53,19 @@ class SparseDispatcher(object):
         self._gates = gates
         self._num_experts = num_experts
         # sort experts
+        # TODO: see if can conver to 3 dimensions for torch.nonzero(gates)?
         sorted_experts, index_sorted_experts = torch.nonzero(gates).sort(0)
         # drop indices
-        _, self._expert_index = sorted_experts.split(1, dim=1)
+        self._expert_index = sorted_experts.split(sorted_experts.shape[1] - 1, dim=1)[-1]
         # get according batch index for each expert
-        self._batch_index = torch.nonzero(gates)[index_sorted_experts[:, 1], 0]
+        self._batch_index = torch.unique_consecutive(torch.nonzero(gates)[index_sorted_experts[:, -1], 0])
+        pdb.set_trace()
         # calculate num samples that each expert gets
-        self._part_sizes = (gates > 0).sum(0).tolist()
+        dims_to_sum = tuple(range(gates.dim() - 1))
+        self._part_sizes = (gates > 0).sum(dim=dims_to_sum).tolist()
         # expand gates to match with self._batch_index
         gates_exp = gates[self._batch_index.flatten()]
-        self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
-        pdb.set_trace()
+        self._nonzero_gates = torch.gather(gates_exp, -1, self._expert_index[..., None].repeat(1, gates_exp.shape[1], 1))
 
     def dispatch(self, inp):
         """Create one input Tensor for each expert.
@@ -194,7 +196,8 @@ class HierarchicalMoE(nn.Module):
         Returns:
         a float32 `Tensor` of shape [n]
         """
-        return (gates > 0).sum(0)
+        dims_to_sum = tuple(range(gates.dim() - 1))
+        return (gates > 0).sum(dim=dims_to_sum)
 
     def _prob_in_top_k(self, clean_values, noisy_values, noise_stddev, noisy_top_values, level):
         """Helper function to NoisyTopKGating.
@@ -213,8 +216,10 @@ class HierarchicalMoE(nn.Module):
         Returns:
         a `Tensor` of shape [batch, n].
         """
+
         batch = clean_values.size(0)
-        m = noisy_top_values.size(1)
+        seq = clean_values.size(1)
+        m = noisy_top_values.size(-1)
         top_values_flat = noisy_top_values.flatten()
 
         threshold_positions_if_in = torch.arange(batch, device=clean_values.device) * m + self.k[level]
@@ -232,6 +237,7 @@ class HierarchicalMoE(nn.Module):
     def _get_logits(self, x, train, level, noise_epsilon):
         w_gate = nn.Parameter(torch.zeros(self.input_size, self.num_experts[level]), requires_grad=True).to(x.device)
         w_noise = nn.Parameter(torch.zeros(self.input_size, self.num_experts[level]), requires_grad=True).to(x.device)
+
         if self.gating[level] == 'softmax':
             clean_logits = x @ w_gate
         elif self.gating[level] == 'laplace':
@@ -244,14 +250,15 @@ class HierarchicalMoE(nn.Module):
             noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon) * train)
             noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
             logits = noisy_logits
+            return logits, clean_logits, noisy_logits, noise_stddev
         else:
             logits = clean_logits
-        return logits, clean_logits, noisy_logits, noise_stddev
+            return logits, clean_logits
 
-    def _top_k_gating(self, logits, clean_logits, noisy_logits, noise_stddev, level):
-        top_logits, top_indices = logits.topk(min(self.k[level] + 1, self.num_experts[level]), dim=1)
-        top_k_logits = top_logits[:, :self.k[level]]
-        top_k_indices = top_indices[:, :self.k[level]]
+    def _top_k_gating(self, logits, clean_logits, level, noisy_logits=None, noise_stddev=None):
+        top_logits, top_indices = logits.topk(min(self.k[level] + 1, self.num_experts[level]), dim=-1)
+        top_k_logits = top_logits[..., :self.k[level]]
+        top_k_indices = top_indices[..., :self.k[level]]
         if self.gating[level] == 'softmax':
             top_k_gates = self.softmax(top_k_logits)
         elif self.gating[level] == 'laplace' or self.gating[level] == 'gaussian':
@@ -260,7 +267,7 @@ class HierarchicalMoE(nn.Module):
         zeros = torch.zeros_like(logits, requires_grad=True)
         # map the sorted gate to their original positions
         # obtain gating weights with expert position information
-        gates = zeros.scatter(1, top_k_indices, top_k_gates)
+        gates = zeros.scatter(-1, top_k_indices, top_k_gates)
 
         if self.noisy_gating and self.k[level] < self.num_experts[level]:
             load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits, level)).sum(0)
@@ -281,11 +288,16 @@ class HierarchicalMoE(nn.Module):
             load: a Tensor with shape [num_experts]
         """
         all_logits = self._get_logits(x, train, level, noise_epsilon)
-        logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
-        gates, load = self._top_k_gating(logits, clean_logits, noisy_logits, noise_stddev, level)
-        
+        if self.noisy_gating:
+            logits, clean_logits, noisy_logits, noise_stddev = all_logits[0], all_logits[1], all_logits[2], all_logits[3]
+            gates, load = self._top_k_gating(logits, clean_logits, level, noisy_logits, noise_stddev)
+        else:
+            logits, clean_logits = all_logits[0], all_logits[1]
+            gates, load = self._top_k_gating(logits, clean_logits, level)
+
         # calculate importance loss
-        importance = gates.sum(0)
+        dims_to_sum = tuple(range(gates.dim() - 1))
+        importance = gates.sum(dim=dims_to_sum)
         loss = self.cv_squared(importance) + self.cv_squared(load)
         return gates, loss
 

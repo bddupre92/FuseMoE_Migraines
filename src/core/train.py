@@ -55,13 +55,13 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                 count+=1
                 print("bert update at epoch "+ str(epoch) )
                 for param in model.bertrep.parameters():
-                        param.requires_grad = True
+                    param.requires_grad = True
             else:
                 for param in model.bertrep.parameters():
                     param.requires_grad = False
 
             for param in model.bertrep.parameters():
-                print(epoch,param.requires_grad)
+                print(epoch, param.requires_grad)
                 break
 
         none_count=0
@@ -72,7 +72,6 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
             global_step+=1
 
             ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts, input_ids_sequences, attn_mask_sequences, text_emb, note_time, note_time_mask, cxr_feats, cxr_time, cxr_time_mask, ecg_feats, ecg_time, ecg_time_mask, label, cxr_missing, text_missing, ecg_missing = batch
-
             if  args.modeltype == "TS_Text":
                 loss=model(x_ts=ts_input_sequences, \
                         x_ts_mask=ts_mask_sequences,\
@@ -133,14 +132,10 @@ def trainer_irg(model,args,accelerator,train_dataloader,dev_dataloader,test_data
                         attn_mask_sequences=attn_mask_sequences, text_emb=text_emb, labels=label)
 
             if loss is None:
-                # add warning
                 warnings.warn("loss is None!")
                 continue
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
-
-            # Print loss and 
-
 
             if (step+1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optimizer.step()

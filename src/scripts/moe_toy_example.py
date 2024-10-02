@@ -9,11 +9,14 @@ import torch
 from torch import nn
 from torch.optim import Adam
 import pdb
-from utils.config import FuseMoEConfig
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.config import MoEConfig
 
 # from core.sparse_moe import MoE
-from core.hierarchical_moe import MoE, HierarchicalMoE
-
+from core.hme_seq import HierarchicalMoE
+from core.hierarchical_moe import MoE
 
 
 def train(x, y, model, loss_fn, optim):
@@ -64,14 +67,21 @@ if torch.cuda.is_available():
 else:
     device = torch.device('cpu')
 
-# instantiate the MoE layer
-model = HierarchicalMoE(
-    input_dim = 512,
-    num_experts = (4, 4)
+config = MoEConfig(
+    num_experts=(3, 5),
+    moe_input_size=512,
+    moe_hidden_size=256,
+    moe_output_size=10,
+    top_k=(2, 4),
+    router_type='joint',
+    gating=('softmax' ,'softmax'),
+    noisy_gating=False
 )
+model = HierarchicalMoE(config)
 
 # model = MoE(
-#     dim = 512
+#     input_dim = 512,
+#     num_experts = 4
 # )
 
 model = model.to(device)
@@ -79,7 +89,7 @@ loss_fn = nn.CrossEntropyLoss()
 optim = Adam(model.parameters())
 
 # x, y = dummy_data(seq_len, batch_size, input_size, num_classes)
-x = torch.randn(4, 1024, 512).to(device)
+x = torch.randn(64, 1024, 512).to(device)
 out, aux_loss = model(x)
 pdb.set_trace()
 # # train

@@ -57,13 +57,14 @@ def make_save_dir(args):
                 if args.cross_method == 'moe':
                     output_dir += f"{args.gating_function}/"
                     output_dir += f"{args.router_type}/"
+                    output_dir += f"{args.num_of_experts}/"
                     output_dir += f"top_{args.top_k}/"
                     if args.router_type == 'disjoint':
                         output_dir += f"disjoint_{args.disjoint_top_k}/"
                 if args.cross_method == 'hme':
-                    output_dir += f"{args.gating_function}/"
-                    output_dir += f"{args.num_of_experts}/"
-                    output_dir += f"top_{args.top_k}/"
+                    output_dir += f"{args.gating_function[0]}_{args.gating_function[1]}/"
+                    output_dir += f"{args.num_of_experts[0]}_{args.num_of_experts[1]}/"
+                    output_dir += f"top_{args.top_k[0]}_{args.top_k[1]}/"
 
         if args.modeltype=="Text" or args.modeltype=="TS":
             output_dir+='layer'+str(args.layers)+"/"
@@ -90,7 +91,7 @@ def make_save_dir(args):
             output_dir+=str(args.ts_learning_rate)+"_"
 
         output_dir += str(args.num_train_epochs)+"_"+str(args.num_heads)+"_"+str(args.embed_dim)+"_"\
-        +str(args.kernel_size)+"_"+str(args.train_batch_size)+"_"+str(args.num_of_experts)+"_"+str(args.hidden_size)+'/'
+        +str(args.kernel_size)+"_"+str(args.train_batch_size)+"_"+str(args.hidden_size)+'/'
     args.ck_file_path=output_dir
     print(args.ck_file_path)
 
