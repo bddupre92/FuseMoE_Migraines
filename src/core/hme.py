@@ -63,7 +63,6 @@ class SparseDispatcher(object):
         # expand gates to match with self._batch_index
         gates_exp = gates[self._batch_index.flatten()]
         self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
-        pdb.set_trace()
 
     def dispatch(self, inp):
         """Create one input Tensor for each expert.

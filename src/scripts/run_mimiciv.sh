@@ -22,8 +22,8 @@ python -W ignore main_mimiciv.py  --num_train_epochs 8  --modeltype 'TS_CXR_Text
                 --irregular_learn_emb_ts \
                 --irregular_learn_emb_cxr \
                 --irregular_learn_emb_ecg \
-                --cross_method "hme" \
-                --gating_function "laplace" "laplace" \
+                --cross_method "moe" \
+                --gating_function "laplace" \
                 --num_of_experts 3 5 \
                 --top_k 2 4 \
                 --disjoint_top_k 2 \

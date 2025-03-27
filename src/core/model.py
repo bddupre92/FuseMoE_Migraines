@@ -501,11 +501,9 @@ class MULTCrossModel(nn.Module):
                     last_hs=self.outer_fusion(proj_x_txt[-1],proj_x_ts[-1])
                 else:
                     last_hs = torch.cat([proj_x_txt[-1],proj_x_ts[-1]], dim=1)
-
         last_hs_proj = self.proj2(F.dropout(F.relu(self.proj1(last_hs)), p=self.dropout, training=self.training))
         last_hs_proj += last_hs
         output = self.out_layer(last_hs_proj)
-        pdb.set_trace()
 
         if 'ihm' in self.task or 'los' in self.task:
             if labels!=None:
