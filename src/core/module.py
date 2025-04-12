@@ -3,13 +3,14 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import Linear, LayerNorm
 import numpy as np
 
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 from utils.config import MoEConfig
-from core.sparse_moe import MoE
+from core.sparse_moe import MoE as MixtureOfExperts
 from core.hme import HierarchicalMoE
 import sys
 import pdb
@@ -440,53 +441,42 @@ class TransformerEncoder(nn.Module):
 
 class TransformerCrossEncoder(nn.Module):
     """
-    Transformer encoder consisting of *args.encoder_layers* layers. Each layer
-    is a :class:`TransformerCrossEncoderLayer`.
+    Transformer encoder consisting of *layers* layers. Each layer
+    is a :class:`TransformerEncoderLayer`.
     Args:
-        embed_tokens (torch.nn.Embedding): input embedding
-        num_heads (int): number of heads
-        layers (int): number of layers
-        attn_dropout (float): dropout applied on the attention weights
-        relu_dropout (float): dropout applied on the first layer of the residual block
-        res_dropout (float): dropout applied on the residual block
-        attn_mask (bool): whether to apply mask on the attention weights
+        embed_dim: Embedding dimension
+        num_heads: Number of attention heads
+        layers: Number of layers
+        attn_dropout: Dropout applied on the attention weights
+        relu_dropout: Dropout applied on the first layer of the residual block
+        res_dropout: Dropout applied on the residual block
+        attn_mask: Boolean indicating whether to apply mask on the attention weights
     """
 
     def __init__(self, args, embed_dim, num_heads, layers, device, attn_dropout=0.0, relu_dropout=0.0, res_dropout=0.0,
                  embed_dropout=0.0, attn_mask=False, q_seq_len_1=None, q_seq_len_2=None, num_modalities=2):
         super().__init__()
-        self.dropout = embed_dropout      # Embedding dropout
+        self.device = device
+        self.dropout = embed_dropout
         self.attn_dropout = attn_dropout
         self.embed_dim = embed_dim
         self.embed_scale = math.sqrt(embed_dim)
-        self.device=device
-
-        self.q_seq_len_1=q_seq_len_1 
-        # seq_len_1 is tt_max, the longest sequence length, which is 48 for 48 hrs
-        self.q_seq_len_2=q_seq_len_2
+        self.embed_positions_q = nn.ModuleList([])
+        self.q_seq_len_1 = q_seq_len_1
+        self.q_seq_len_2 = q_seq_len_2
         self.num_modalities = num_modalities
-        # self.intermediate=intermediate
-        self.embed_positions_q_1=nn.Embedding(self.q_seq_len_1, embed_dim, padding_idx=0)
-        nn.init.normal_(self.embed_positions_q_1.weight, std=0.02)
-
-        if self.q_seq_len_2 != None:
-            self.embed_positions_q_2=nn.Embedding(self.q_seq_len_2,embed_dim,padding_idx=0)
-            nn.init.normal_(self.embed_positions_q_2.weight, std=0.02)
-            self.embed_positions_q=nn.ModuleList([self.embed_positions_q_1, self.embed_positions_q_2])
-        else:
-            self.embed_positions_q=nn.ModuleList([self.embed_positions_q_1 for _ in range(num_modalities)])
+        if q_seq_len_1 is not None:
+            self.embed_positions_q = nn.ModuleList([nn.Embedding(q_seq_len_1, embed_dim) for _ in range(num_modalities)])
 
         self.attn_mask = attn_mask
+
         self.layers = nn.ModuleList([])
         for layer in range(layers):
+            # Only pass args to TransformerCrossEncoderLayer, not the additional parameters
             new_layer = TransformerCrossEncoderLayer(args,
-                                                    embed_dim,
-                                                    num_heads=num_heads,
-                                                    attn_dropout=attn_dropout,
-                                                    relu_dropout=relu_dropout,
-                                                    res_dropout=res_dropout,
-                                                    attn_mask=attn_mask,
-                                                    num_modalities=num_modalities)
+                                                    mask_self_attn=attn_mask,
+                                                    mask_cross_attn=attn_mask,
+                                                    device=self.device)
             self.layers.append(new_layer)
 
         self.normalize = True
@@ -528,142 +518,157 @@ class TransformerCrossEncoder(nn.Module):
 
 
 class TransformerCrossEncoderLayer(nn.Module):
-    def __init__(self, args, embed_dim, num_heads=4, attn_dropout=0.1, relu_dropout=0.1, res_dropout=0.1, 
-                 attn_mask=False, num_modalities=2):
-        super().__init__()
-        self.args = args
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.num_modalities = num_modalities
-        self.pre_self_attn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
+    def __init__(self, args, 
+                 mask_self_attn=False,
+                 mask_cross_attn=False,
+                 device='cpu'):
+        super(TransformerCrossEncoderLayer, self).__init__()
 
-        self.self_attns = nn.ModuleList([MultiheadAttention(
-            embed_dim=self.embed_dim,
-            num_heads=self.num_heads,
-            attn_dropout=attn_dropout
-        ) for _ in range(num_modalities)])
-
-        self.post_self_attn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-        self.pre_encoder_attn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-
-        self.cross_attn_1 = MultiheadAttention(
-            embed_dim=self.embed_dim,
-            num_heads=self.num_heads,
-            attn_dropout=attn_dropout
-        )
-
-        self.cross_attn_2 = MultiheadAttention(
-            embed_dim=self.embed_dim,
-            num_heads=self.num_heads,
-            attn_dropout=attn_dropout
-        )
-
-        self.post_encoder_attn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-
-        self.attn_mask = attn_mask
-
-        self.relu_dropout = relu_dropout
-        self.res_dropout = res_dropout
-        self.normalize_before = True
-
-        self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
-        self.fc1 = nn.ModuleList([nn.Linear(self.embed_dim, 4 * self.embed_dim) for _ in range(num_modalities)])  # The "Add & Norm" part in the paper
-        self.fc2 = nn.ModuleList([nn.Linear(4 * self.embed_dim, self.embed_dim) for _ in range(num_modalities)])
-        self.pre_ffn_layer_norm = nn.ModuleList([nn.LayerNorm(self.embed_dim) for _ in range(num_modalities)])
+        # Store device parameter
+        self.device = device
         
-        if args.cross_method == 'moe':
+        # Ensure dimensions are consistent
+        assert args.embed_dim == args.embed_dim
+
+        if args.cross_method == "moe":
+            # Create MoEConfig for MixtureOfExperts with all required parameters
+            num_experts = args.num_of_experts[0] if args.num_of_experts else 3
+            moe_input_size = args.embed_dim
+            moe_hidden_size = args.hidden_size
+            moe_output_size = args.embed_dim
+            router_type = args.router_type if hasattr(args, 'router_type') else 'joint'
+            
             moe_config = MoEConfig(
-            num_experts=args.num_of_experts[0],
-            moe_input_size=args.tt_max * args.embed_dim * num_modalities,
-            moe_hidden_size=args.hidden_size,
-            moe_output_size=args.tt_max * args.embed_dim * num_modalities,
-            top_k=args.top_k[0],
-            router_type=args.router_type,
-            num_modalities=args.num_modalities,
-            gating=args.gating_function[0])
-            self.moe = MoE(moe_config)
-            self.moe = self.moe.to('cuda:0')
-        elif args.cross_method == 'hme':
-            moe_config = MoEConfig(
-            num_experts=args.num_of_experts,
-            moe_input_size=args.tt_max * args.embed_dim * num_modalities,
-            moe_hidden_size=args.hidden_size,
-            moe_output_size=args.tt_max * args.embed_dim * num_modalities,
-            top_k=args.top_k,
-            router_type=args.router_type,
-            num_modalities=args.num_modalities,
-            gating=args.gating_function)
-            self.moe = HierarchicalMoE(moe_config)
-            self.moe = self.moe.to('cuda:0')
+                num_experts=num_experts,
+                moe_input_size=moe_input_size,
+                moe_hidden_size=moe_hidden_size,
+                moe_output_size=moe_output_size,
+                router_type=router_type,
+                top_k=args.top_k[0] if args.top_k else 2,
+                num_modalities=args.num_modalities if hasattr(args, 'num_modalities') else 2,
+                disjoint_top_k=args.disjoint_top_k if hasattr(args, 'disjoint_top_k') else 2,
+                gating='softmax',  # Default gating method
+                hidden_dim=args.embed_dim
+            )
+            
+            # Initialize MoE with config
+            self.moe = MixtureOfExperts(moe_config)
+            
+            # Move to the appropriate device
+            self.moe = self.moe.to(self.device)
+        else:
+            # Initialize cross attention otherwise
+            self.cross_attn = nn.MultiheadAttention(
+                args.embed_dim, 
+                args.num_heads, 
+                dropout=args.dropout
+            )
         
-    def forward(self, x_list, modality):
+        self.method = args.cross_method
+        self.mask_cross_attn = mask_cross_attn
+
+        # Self attention always used
+        self.self_attn = nn.MultiheadAttention(
+            args.embed_dim, 
+            args.num_heads, 
+            dropout=args.dropout
+        )
+        
+        self.mask_self_attn = mask_self_attn
+        
+        # Feed forward network
+        self.linear1 = nn.Linear(args.embed_dim, args.hidden_size)
+        self.dropout = nn.Dropout(args.dropout)
+        self.linear2 = nn.Linear(args.hidden_size, args.embed_dim)
+        
+        # Layer normalization
+        self.norm1 = nn.LayerNorm(args.embed_dim)
+        self.norm2 = nn.LayerNorm(args.embed_dim)
+        self.norm3 = nn.LayerNorm(args.embed_dim)
+        self.dropout1 = nn.Dropout(args.dropout)
+        self.dropout2 = nn.Dropout(args.dropout)
+        self.dropout3 = nn.Dropout(args.dropout)
+        
+        # MoE or self_cross flag
+        if args.self_cross:
+            # Create MoEConfig for self_moe with all required parameters
+            self_num_experts = args.num_of_experts[0] if hasattr(args, 'num_of_experts') and args.num_of_experts else 8
+            self_moe_config = MoEConfig(
+                num_experts=self_num_experts,
+                moe_input_size=args.embed_dim,
+                moe_hidden_size=args.hidden_size,
+                moe_output_size=args.embed_dim,
+                router_type=args.router_type if hasattr(args, 'router_type') else 'joint',
+                top_k=args.top_k[0] if hasattr(args, 'top_k') and args.top_k else 4,
+                num_modalities=args.num_modalities if hasattr(args, 'num_modalities') else 2,
+                disjoint_top_k=args.disjoint_top_k if hasattr(args, 'disjoint_top_k') else 2,
+                gating='softmax',  # Default gating method
+                hidden_dim=args.embed_dim
+            )
+            
+            # Initialize MoE with config
+            self.self_moe = MixtureOfExperts(self_moe_config)
+            
+            # Move to the appropriate device
+            self.self_moe = self.self_moe.to(self.device)
+            
+        self.self_cross = args.self_cross if hasattr(args, 'self_cross') else False
+        
+    def forward(self, q, k=None, v=None, attn_mask=None):
         """
         Args:
-            x (List of Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
-            encoder_padding_mask (ByteTensor): binary ByteTensor of shape
-                `(batch, src_len)` where padding elements are indicated by ``1``.
+            q: query tensor
+            k: key tensor (optional)
+            v: value tensor (optional)
+            attn_mask: attention mask (optional)
         Returns:
-            list of encoded output of shape `(batch, src_len, embed_dim)`
+            output tensor
         """
-        residual = x_list
-        seq_len, bs = x_list[0].shape[0], x_list[0].shape[1]
-
-        x_list = [l(x) for l, x in zip(self.pre_self_attn_layer_norm, x_list)]
-
-        output = [l(query=x, key=x, value=x) for l, x in zip(self.self_attns, x_list)]
-        # attn: output[0][0].shape -> [48, 3, 128]; attn_weights: output[0][1].shape -> [3, 48, 48]
-        # filter out attn_weights
-        x_list = [x for x, _ in output]
-        x_list = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_list]
-        x_list = [r + x for r, x in zip(residual, x_list)]
-
-        # moe or cross attn
-        residual = x_list
-        x_list = [l(x) for l, x in zip(self.pre_encoder_attn_layer_norm, x_list)]
-        if self.args.cross_method in ["moe", "hme"]:
-            x_mod_in = [torch.reshape(x, (bs, -1)) for x in x_list]
-            embd_len_list = [0] + list(np.cumsum([x.shape[1] for x in x_mod_in]))
-            embeddings = torch.concat(x_mod_in, dim=1)
-            if torch.isnan(embeddings).any():
-                return None
-            moe_out, balance_loss = self.moe(x_mod_in, modalities=modality)
-            x_mod_out = [moe_out[:, embd_len_list[i]:embd_len_list[i + 1]] for i in range(len(embd_len_list) - 1)]
-            x_allmod_output = [torch.reshape(x, (seq_len, bs, -1)) for x in x_mod_out]
-            moe_output = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_allmod_output]
-            x_list = [r + x for r, x in zip(residual, moe_output)]
-
-        if self.args.cross_method == "self_cross":
-            assert self.num_modalities == 2, 'Input modality should be 2 if using cross attention method.'
-            x_txt, x_ts = x_list #proj_x_txt, proj_x_ts
-            x_ts_to_txt, _ = self.cross_attn_1(query=x_txt, key=x_ts, value=x_ts)
-            x_txt_to_ts, _ = self.cross_attn_2(query=x_ts, key=x_txt, value=x_txt)
-
-            x_ts_to_txt = F.dropout(x_ts_to_txt, p=self.res_dropout, training=self.training)
-            x_txt_to_ts = F.dropout(x_txt_to_ts, p=self.res_dropout, training=self.training)
-            x_list = [r + x for r, x in zip(residual, (x_ts_to_txt, x_txt_to_ts))]
-
-        # FNN
-        residual = x_list
-        x_list = [l(x) for l, x in zip(self.pre_ffn_layer_norm, x_list)]
-        x_list = [F.relu(l(x)) for l, x in zip(self.fc1, x_list)]
-        x_list = [F.dropout(x, p=self.relu_dropout, training=self.training) for x in x_list]
-        x_list = [l(x) for l, x in zip(self.fc2, x_list)]
-        x_list = [F.dropout(x, p=self.res_dropout, training=self.training) for x in x_list]
-        x_list = [r + x  for r, x in zip(residual, x_list) ]
-        return x_list
+        # Self attention with residual connection
+        residual = q
+        q = self.norm1(q)
+        
+        # Apply self attention
+        if self.mask_self_attn:
+            mask = buffered_future_mask(q)
+        else:
+            mask = None
+            
+        # Self attention
+        q2, _ = self.self_attn(q, q, q, attn_mask=mask)
+        q = residual + self.dropout1(q2)
+        
+        # Cross attention or MoE
+        if k is not None and v is not None:
+            residual = q
+            q = self.norm2(q)
+            
+            if self.method == "moe":
+                # Use MoE layer
+                q2 = self.moe(q)
+            else:
+                # Cross attention
+                if self.mask_cross_attn:
+                    mask = buffered_future_mask(q, k)
+                else:
+                    mask = None
+                q2, _ = self.cross_attn(q, k, v, attn_mask=mask)
+                
+            q = residual + self.dropout2(q2)
+            
+        # Feed forward network
+        residual = q
+        q = self.norm3(q)
+        q2 = self.linear2(self.dropout(F.relu(self.linear1(q))))
+        q = residual + self.dropout3(q2)
+        
+        return q
 
 
 class TransformerEncoderLayer(nn.Module):
-    """Encoder layer block.
-    In the original paper each operation (multi-head attention or FFN) is
-    postprocessed with: `dropout -> add residual -> layernorm`. In the
-    tensor2tensor code they suggest that learning is more robust when
-    preprocessing each layer with layernorm and postprocessing with:
-    `dropout -> add residual`. We default to the approach in the paper, but the
-    tensor2tensor approach can be enabled by setting
-    *args.encoder_normalize_before* to ``True``.
-    Args:
-        embed_dim: Embedding dimension
+    """
+    Implements a Transformer Encoder Layer used in BERT/XLM style pre-trained
+    models.
     """
 
     def __init__(self, embed_dim, num_heads=4, attn_dropout=0.1, relu_dropout=0.1, res_dropout=0.1,
@@ -671,17 +676,20 @@ class TransformerEncoderLayer(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-
+        
         self.self_attn = MultiheadAttention(
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
             attn_dropout=attn_dropout
         )
-        self.attn_mask = attn_mask
-
-        self.relu_dropout = relu_dropout
+        self.dropout1 = nn.Dropout(res_dropout)
+        self.dropout2 = nn.Dropout(res_dropout)
+        self.dropout3 = nn.Dropout(res_dropout)
+        self.dropout = nn.Dropout(relu_dropout)
         self.res_dropout = res_dropout
         self.normalize_before = True
+        self.mask_self_attn = attn_mask
+        self.mask_cross_attn = attn_mask
 
         self.fc1 = Linear(self.embed_dim, 4*self.embed_dim)   # The "Add & Norm" part in the paper
         self.fc2 = Linear(4*self.embed_dim, self.embed_dim)
@@ -695,66 +703,44 @@ class TransformerEncoderLayer(nn.Module):
                 `(batch, src_len)` where padding elements are indicated by ``1``.
             x_k (Tensor): same as x
             x_v (Tensor): same as x
-        Returns:bpbpp
+        Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
 
         residual = x
-        x = self.maybe_layer_norm(0, x, before=True)
-        mask = buffered_future_mask(x, x_k) if self.attn_mask else None
-        if x_k is None and x_v is None:
-            x, _ = self.self_attn(query=x, key=x, value=x, attn_mask=mask)
+        x = self.layer_norms[0](x)
+        
+        # Apply self attention
+        if self.mask_self_attn:
+            mask = buffered_future_mask(x)
         else:
-            x_k = self.maybe_layer_norm(0, x_k, before=True)
-            x_v = self.maybe_layer_norm(0, x_v, before=True)
-            x, _ = self.self_attn(query=x, key=x_k, value=x_v, attn_mask=mask)
-        x = F.dropout(x, p=self.res_dropout, training=self.training)
-        x = residual + x
-        x = self.maybe_layer_norm(0, x, after=True)
-
+            mask = None
+            
+        # Self attention
+        x2, _ = self.self_attn(x, x, x, attn_mask=mask)
+        x = residual + self.dropout1(x2)
+        
+        # Cross attention or MoE
+        if x_k is not None and x_v is not None:
+            residual = x
+            x = self.layer_norms[1](x)
+            
+            if self.method == "moe":
+                # Use MoE layer
+                x2 = self.moe(x)
+            else:
+                # Cross attention
+                if self.mask_cross_attn:
+                    mask = buffered_future_mask(x, x_k)
+                else:
+                    mask = None
+                x2, _ = self.cross_attn(x, x_k, x_v, attn_mask=mask)
+                
+            x = residual + self.dropout2(x2)
+            
+        # Feed forward network
         residual = x
-        x = self.maybe_layer_norm(1, x, before=True)
-        x = F.relu(self.fc1(x))
-        x = F.dropout(x, p=self.relu_dropout, training=self.training)
-        x = self.fc2(x)
-        x = F.dropout(x, p=self.res_dropout, training=self.training)
-        x = residual + x
-        x = self.maybe_layer_norm(1, x, after=True)
+        x = self.fc2(self.dropout(F.relu(self.fc1(x))))
+        x = residual + self.dropout3(x)
+        
         return x
-
-    def maybe_layer_norm(self, i, x, before=False, after=False):
-        assert before ^ after
-        if after ^ self.normalize_before:
-            return self.layer_norms[i](x)
-        else:
-            return x
-
-def Linear(in_features, out_features, bias=True):
-    m = nn.Linear(in_features, out_features, bias)
-#     nn.init.xavier_uniform_(m.weight)
-    if bias:
-        nn.init.constant_(m.bias, 0.)
-    return m
-
-
-def LayerNorm(embedding_dim):
-    m = nn.LayerNorm(embedding_dim)
-
-    return m
-
-
-def fill_with_neg_inf(t):
-    """FP16-compatible function that fills a tensor with -inf."""
-    return t.float().fill_(float('-inf')).type_as(t)
-
-
-def buffered_future_mask(tensor, tensor2=None):
-    dim1 = dim2 = tensor.size(0)
-    if tensor2 is not None:
-        dim2 = tensor2.size(0)
-    future_mask = torch.triu(fill_with_neg_inf(torch.ones(dim1, dim2)), 1+abs(dim2-dim1))
-    if tensor.is_cuda:
-        future_mask = future_mask.cuda()
-    return future_mask[:dim1, :dim2]
-
-

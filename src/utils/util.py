@@ -151,6 +151,23 @@ def parse_args():
     parser.add_argument("--num_modalities", default=2, type=int, help="the number of input modalities used to train transformer")
     parser.add_argument("--use_pt_text_embeddings", action='store_true', help="Option to use pre-extracted text embeddings")
     parser.add_argument("--router_type", default='joint', type=str, help="all router types: joint, permod, disjoint")
+    
+    # PyGMO optimization parameters
+    parser.add_argument('--use_pygmo', action='store_true', help='Use PyGMO optimization for experts and gating')
+    parser.add_argument('--expert_algorithm', type=str, default='de', help='Algorithm for expert optimization (de, sade, pso)')
+    parser.add_argument('--gating_algorithm', type=str, default='pso', help='Algorithm for gating optimization (pso, abc, sade)')
+    parser.add_argument('--expert_population_size', type=int, default=10, help='Population size for expert optimization')
+    parser.add_argument('--gating_population_size', type=int, default=10, help='Population size for gating optimization')
+    parser.add_argument('--expert_generations', type=int, default=5, help='Number of generations for expert optimization')
+    parser.add_argument('--gating_generations', type=int, default=5, help='Number of generations for gating optimization')
+    
+    # Patient-specific adaptation
+    parser.add_argument('--patient_adaptation', action='store_true', help='Enable patient-specific adaptation')
+    parser.add_argument('--patient_id', type=str, default=None, help='ID of the patient for patient-specific adaptation')
+    parser.add_argument('--patient_iterations', type=int, default=3, help='Number of iterations for patient adaptation')
+    parser.add_argument('--load_base_model', type=str, default=None, help='Path to base model for patient adaptation')
+    parser.add_argument('--modality_experts', type=str, default=None, help='Allocation of experts to modalities, format: "modality1:num1,modality2:num2"')
+    
     args = parser.parse_args()
     return args
 

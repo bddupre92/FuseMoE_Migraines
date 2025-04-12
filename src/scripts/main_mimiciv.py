@@ -33,14 +33,30 @@ def main():
 
     print(args)
 
-    if args.fp16:
-        args.mixed_precision="fp16"
+    # Check if GPU is available and determine type
+    if torch.cuda.is_available():
+        device_type = "cuda"
+        print("CUDA GPU is available")
+        if args.fp16:
+            args.mixed_precision = "fp16"
+        else:
+            args.mixed_precision = "no"
+    elif hasattr(torch, 'backends') and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device_type = "mps"
+        print("Apple MPS (Metal) is available, but fp16 is not supported - disabling fp16")
+        # MPS doesn't support fp16 mixed precision, so force to "no"
+        args.mixed_precision = "no"
+        args.fp16 = False
     else:
-        args.mixed_precision="no"
-    accelerator = Accelerator(mixed_precision=args.mixed_precision,cpu=args.cpu)
+        device_type = "cpu"
+        print("Running on CPU - disabling fp16")
+        args.mixed_precision = "no"
+        args.fp16 = False
+    
+    accelerator = Accelerator(mixed_precision=args.mixed_precision, cpu=args.cpu)
 
     device = accelerator.device
-    print(device)
+    print(f"Using device: {device}")
     os.makedirs(args.output_dir, exist_ok = True)
     if args.tensorboard_dir!=None:
         writer = SummaryWriter(args.tensorboard_dir)

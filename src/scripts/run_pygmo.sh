@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with non-zero status
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 # Script directory and base path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
@@ -24,17 +24,19 @@ mkdir -p "$DATA_DIR"
 echo "Data directory: $DATA_DIR"
 
 # Create output directory
-OUTPUT_DIR="$BASE_DIR/run/TS_Text"
+OUTPUT_DIR="$BASE_DIR/run/PyGMO_TS"
 mkdir -p "$OUTPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 
-# Step 1: Generate synthetic dataset
-echo "Generating synthetic dataset for FuseMOE..."
-python "$SCRIPT_DIR/create_minimal_dataset.py"
-echo "Dataset generation complete."
+# Step 1: Generate synthetic dataset (if it doesn't already exist)
+if [ ! -f "$DATA_DIR/trainp2x_data.pkl" ]; then
+    echo "Generating synthetic dataset for FuseMOE..."
+    python "$SCRIPT_DIR/create_minimal_dataset.py"
+    echo "Dataset generation complete."
+fi
 
-# Step 2: Run the main.py script with FuseMOE parameters
-echo "Running main.py with FuseMOE parameters..."
+# Step 2: Run the main.py script with PyGMO-enhanced FuseMOE parameters
+echo "Running main.py with PyGMO-enhanced FuseMOE parameters..."
 python -W ignore "$SCRIPT_DIR/main.py" \
     --num_train_epochs 6 \
     --modeltype 'TS' \
@@ -65,8 +67,14 @@ python -W ignore "$SCRIPT_DIR/main.py" \
     --num_of_experts 3 \
     --top_k 2 \
     --router_type 'joint' \
+    --use_pygmo \
+    --expert_algorithm "de" \
+    --gating_algorithm "pso" \
+    --expert_population_size 10 \
+    --gating_population_size 10 \
+    --expert_generations 5 \
+    --gating_generations 5 \
     $CPU_FLAG \
-    --debug \
     --reg_ts
 
-echo "FuseMOE run completed. Results saved to $OUTPUT_DIR"
+echo "PyGMO-enhanced FuseMOE run completed. Results saved to $OUTPUT_DIR" 

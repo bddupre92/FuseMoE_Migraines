@@ -11,6 +11,7 @@ import time
 from typing import List, Dict, Tuple, Optional, Union
 from utils.config import MoEConfig
 from core.sparse_moe import MLP, MoE
+import torch.nn.functional as F
 
 class ExpertEvolutionProblem:
     """
@@ -67,6 +68,10 @@ class ExpertEvolutionProblem:
         self.train_targets = target_data[train_indices].to(device)
         self.val_inputs = input_data[val_indices].to(device)
         self.val_targets = target_data[val_indices].to(device)
+        
+        # --- Use actual input data shape for internal model creation --- 
+        self.actual_input_size = input_data.shape[1]
+        # --- End --- 
         
         # Set problem dimensions
         # Each expert is encoded as [hidden_size, activation_type]
@@ -136,12 +141,13 @@ class ExpertEvolutionProblem:
             Configured SimpleMoE model
         """
         # Create a modified MoE model with the specified expert configurations
-        moe_config = self.config
+        # moe_config = self.config # Don't necessarily use the global config's input size
         
         # Create a custom MoE with evolutionarily optimized experts
+        # Use the *actual* input size from the data passed to the problem
         model = EvolutionaryMoE(
-            config=moe_config,
-            input_size=self.input_size,
+            config=self.config, # Pass config for other params
+            input_size=self.actual_input_size, 
             output_size=self.output_size,
             expert_configs=expert_configs
         )
@@ -304,58 +310,52 @@ class EvolutionaryMLP(MLP):
 
 class EvolutionaryMoE(nn.Module):
     """
-    Mixture of Experts with evolutionary optimized experts.
-    This is a simplified version for evolutionary optimization.
+    A basic MoE layer using evolutionarily defined MLP experts.
+    Assumes gating is handled externally or is a simple softmax gate.
     """
-    
     def __init__(self, config: MoEConfig, input_size: int, output_size: int, expert_configs: List[Dict]):
-        super(EvolutionaryMoE, self).__init__()
-        
+        super().__init__()
+        self.config = config
         self.num_experts = len(expert_configs)
-        self.output_size = output_size
-        self.input_size = input_size
         
-        # Create experts based on evolutionary configs
+        # Create experts based on the provided configurations
         self.experts = nn.ModuleList([
             EvolutionaryMLP(
-                config=config,
-                input_size=input_size,
-                output_size=output_size,
-                hidden_size=conf['hidden_size'],
+                config=config, 
+                input_size=input_size, # Use the input_size passed to this constructor
+                output_size=output_size, 
+                hidden_size=conf['hidden_size'], 
                 activation=conf['activation']
             )
             for conf in expert_configs
         ])
         
-        # Simple gating network
-        self.gate = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, self.num_experts),
-            nn.Softmax(dim=1)
-        )
+        # Simple softmax gating layer (can be replaced by more complex gating)
+        self.gate = nn.Linear(input_size, self.num_experts)
         
-        # For tracking expert usage
-        self.expert_usage = None
-    
+        # Initialize attribute to store usage stats
+        self.expert_usage_stats = None
+        
     def forward(self, x):
+        # Get gating scores
+        gates = self.gate(x)
+        # Apply softmax to get probabilities
+        gate_probs = F.softmax(gates, dim=1)
+        
+        # Store gate probabilities for usage analysis (mean across batch)
+        self.expert_usage_stats = gate_probs.mean(dim=0).detach().cpu().numpy()
+        
         # Get expert outputs
         expert_outputs = [expert(x) for expert in self.experts]
         expert_outputs = torch.stack(expert_outputs, dim=1)  # [batch, num_experts, output_size]
         
-        # Get gating weights
-        gates = self.gate(x).unsqueeze(-1)  # [batch, num_experts, 1]
-        
-        # Store gates for usage analysis
-        self.expert_usage = gates.mean(dim=0).squeeze().detach().cpu()
-        
         # Combine outputs
-        combined = (expert_outputs * gates).sum(dim=1)  # [batch, output_size]
+        combined = (expert_outputs * gate_probs.unsqueeze(-1)).sum(dim=1)  # [batch, output_size]
         return combined
     
     def get_expert_usage(self):
-        """Return the latest expert usage statistics"""
-        return self.expert_usage
+        """Return expert usage statistics (e.g., mean gating probabilities)."""
+        return self.expert_usage_stats
 
 
 # Utility functions for evolutionary expert optimization

@@ -163,14 +163,17 @@ def load_data(file_path,mode,debug=False,text=False):
         dataPath = os.path.join(file_path, mode + 'p2x_data.pkl')
     else:
         dataPath = os.path.join(file_path, mode + 'token_attn.pkl')
+    
     if os.path.isfile(dataPath):
         print('Using', dataPath)
         with open(dataPath, 'rb') as f:
             data = pickle.load(f)
             if debug and not text:
                 data=data[:100]
-
-    return data
+        return data
+    else:
+        print(f"Error: Data file {dataPath} not found")
+        raise FileNotFoundError(f"Could not find data file at {dataPath}")
 
 
 def TextTSIrgcollate_fn(batch):
@@ -198,8 +201,36 @@ def TextTSIrgcollate_fn(batch):
 
     else:
         input_ids,attn_mask, note_time, note_time_mask =None,None,None,None
-    return ts_input_sequences,ts_mask_sequences, ts_tt, reg_ts_input, \
-         input_ids,attn_mask, note_time ,note_time_mask, label
+    
+    # Create placeholder values for the missing fields
+    # Based on the 19 expected values in trainer_irg
+    
+    # Create a None text embedding tensor
+    text_emb = None
+    
+    # Create placeholders for CXR data
+    batch_size = ts_input_sequences.shape[0]
+    feature_dim = ts_input_sequences.shape[2]
+    cxr_feats = torch.zeros((batch_size, 1, feature_dim), device=ts_input_sequences.device)
+    cxr_time = torch.zeros((batch_size, 1), device=ts_input_sequences.device)
+    cxr_time_mask = torch.zeros((batch_size, 1), device=ts_input_sequences.device, dtype=torch.long)
+    
+    # Create placeholders for ECG data
+    ecg_feats = torch.zeros((batch_size, 1, feature_dim), device=ts_input_sequences.device)
+    ecg_time = torch.zeros((batch_size, 1), device=ts_input_sequences.device)
+    ecg_time_mask = torch.zeros((batch_size, 1), device=ts_input_sequences.device, dtype=torch.long)
+    
+    # Create missing flags (all set to 1 to indicate missing data)
+    cxr_missing = torch.ones((batch_size), device=ts_input_sequences.device, dtype=torch.long)
+    text_missing = torch.ones((batch_size), device=ts_input_sequences.device, dtype=torch.long) if input_ids is None else torch.zeros((batch_size), device=ts_input_sequences.device, dtype=torch.long)
+    ecg_missing = torch.ones((batch_size), device=ts_input_sequences.device, dtype=torch.long)
+    
+    # Return all 19 expected values
+    return ts_input_sequences, ts_mask_sequences, ts_tt, reg_ts_input, \
+           input_ids, attn_mask, text_emb, note_time, note_time_mask, \
+           cxr_feats, cxr_time, cxr_time_mask, \
+           ecg_feats, ecg_time, ecg_time_mask, \
+           label, cxr_missing, text_missing, ecg_missing
 
 
 
