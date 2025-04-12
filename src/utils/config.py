@@ -12,6 +12,7 @@ class MoEConfig:
         moe_hidden_size,
         moe_output_size,
         router_type,
+        window_size,
         gating='softmax',
         num_modalities=1,
         vocab_size=100,
@@ -60,6 +61,7 @@ class MoEConfig:
         self.router_type = router_type
         self.num_modalities = num_modalities
         self.gating = gating
+        self.window_size = window_size
 
         # image
         self.image_size = image_size

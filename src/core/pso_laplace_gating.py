@@ -11,6 +11,7 @@ import time
 import random
 from typing import List, Dict, Tuple, Optional, Union, Any
 from utils.config import MoEConfig
+from sklearn.model_selection import train_test_split
 
 class LaplaceActivation(nn.Module):
     """
@@ -155,61 +156,104 @@ class PSOGatingProblem:
     Particle Swarm Optimization.
     """
     
-    def __init__(self,
-                 moe_model: nn.Module,
-                 gating_model: PSOLaplaceGating,
-                 input_data: torch.Tensor,
-                 target_data: torch.Tensor,
-                 validation_split: float = 0.2,
-                 population_size: int = 20,
-                 load_balance_coef: float = 0.1,
-                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
-        """
-        Initialize the PSO gating optimization problem.
-        
-        Args:
-            moe_model: The MoE model containing experts
-            gating_model: The gating model to optimize
-            input_data: Training input data
-            target_data: Training target data
-            validation_split: Fraction of data to use for validation
-            population_size: Size of population for PSO
-            load_balance_coef: Coefficient for load balancing objective
-            device: Device to run computations on
-        """
+    def __init__(self, 
+                 moe_model, 
+                 gating_model, 
+                 input_data, # Encoded: [Batch*Window, EncodedDim]
+                 original_input_dict, # Dict: {mod: [Batch, Window, Feat]}
+                 target_data, # Expanded: [Batch*Window, 1]
+                 original_target_data, # Original: [Batch, 1]
+                 window_size, # Needed for index mapping
+                 validation_split=0.2, 
+                 population_size=20, 
+                 load_balance_coef=0.1, 
+                 device='cpu',
+                 seed=42):
+        """Initialize the PyGMO problem for gating optimization."""
         self.moe_model = moe_model
         self.gating_model = gating_model
+        self.encoded_input_data = input_data.to(device)
+        self.original_input_dict = {mod: tensor.to(device) for mod, tensor in original_input_dict.items()}
+        self.expanded_target_data = target_data.to(device)
+        self.original_target_data = original_target_data.to(device)
+        self.window_size = window_size
+        self.validation_split = validation_split
         self.population_size = population_size
         self.load_balance_coef = load_balance_coef
         self.device = device
+        self.seed = seed
         
-        # Prepare data
-        val_size = int(len(input_data) * validation_split)
-        indices = torch.randperm(len(input_data))
-        train_indices = indices[val_size:]
-        val_indices = indices[:val_size]
+        # Extract parameters and dimensions from the gating_model
+        self.params = [p.data.clone() for p in self.gating_model.parameters() if p.requires_grad]
+        self.param_shapes = [p.shape for p in self.params]
+        self.param_sizes = [p.numel() for p in self.params]
+        self.dim = sum(self.param_sizes)
         
-        self.train_inputs = input_data[train_indices].to(device)
-        self.train_targets = target_data[train_indices].to(device)
-        self.val_inputs = input_data[val_indices].to(device)
-        self.val_targets = target_data[val_indices].to(device)
-        
-        # Extract parameters from gating model for optimization
-        self.param_shapes = []
-        self.param_sizes = []
-        total_params = 0
-        
-        for param in self.gating_model.parameters():
-            if param.requires_grad:
-                self.param_shapes.append(param.shape)
-                size = param.numel()
-                self.param_sizes.append(size)
-                total_params += size
-        
-        self.dim = total_params
+        # History tracking
+        self.history = []
         self.best_fitness = float('inf')
         self.best_solution = None
-        self.history = []
+        self.eval_count = 0
+        
+        # --- Train/Validation Split based on Original Batch Indices --- 
+        batch_size = self.original_target_data.shape[0]
+        indices = np.arange(batch_size)
+        
+        try:
+            # Stratify based on ORIGINAL targets
+            train_indices, val_indices = train_test_split(
+                indices, 
+                test_size=self.validation_split, 
+                random_state=self.seed,
+                stratify=self.original_target_data.cpu().numpy() 
+            )
+            
+            # Create validation dictionary using batch indices [ValBatch, Window, Feat]
+            self.val_inputs_dict = { 
+                mod: data[val_indices] 
+                for mod, data in self.original_input_dict.items()
+            }
+            # Store original validation targets [ValBatch, 1]
+            self.val_targets = self.original_target_data[val_indices]
+            
+            # Create encoded validation inputs needed for gating model [ValBatch*Window, EncodedDim]
+            # Map batch indices to expanded indices (Batch*Window)
+            expanded_val_indices = []
+            for idx in val_indices:
+                expanded_val_indices.extend(range(idx * self.window_size, (idx + 1) * self.window_size))
+            self.encoded_val_inputs = self.encoded_input_data[expanded_val_indices]
+            
+            # Store expanded validation targets [ValBatch*Window, 1]
+            self.expanded_val_targets = self.expanded_target_data[expanded_val_indices]
+
+            
+            print(f"[PSOGatingProblem Init] Validation target counts (original): {np.unique(self.val_targets.cpu().numpy(), return_counts=True)}")
+            # Example print - get first modality key dynamically
+            first_mod_key = next(iter(self.val_inputs_dict)) if self.val_inputs_dict else None
+            if first_mod_key:
+                print(f"[PSOGatingProblem Init] Shape of val_inputs_dict['{first_mod_key}']: {self.val_inputs_dict[first_mod_key].shape}")
+            print(f"[PSOGatingProblem Init] Shape of encoded_val_inputs: {self.encoded_val_inputs.shape}")
+            print(f"[PSOGatingProblem Init] Shape of val_targets: {self.val_targets.shape}")
+            print(f"[PSOGatingProblem Init] Shape of expanded_val_targets: {self.expanded_val_targets.shape}")
+            
+        except ValueError as e:
+            print(f"Warning: Stratified split failed: {e}. Performing regular split.")
+            # Fallback to non-stratified split on indices if necessary
+            train_indices, val_indices = train_test_split(
+                indices, test_size=self.validation_split, random_state=self.seed
+            )
+            # Recreate dicts/tensors as above
+            self.val_inputs_dict = { 
+                mod: data[val_indices] 
+                for mod, data in self.original_input_dict.items()
+            }
+            self.val_targets = self.original_target_data[val_indices]
+            expanded_val_indices = []
+            for idx in val_indices:
+                expanded_val_indices.extend(range(idx * self.window_size, (idx + 1) * self.window_size))
+            self.encoded_val_inputs = self.encoded_input_data[expanded_val_indices]
+            self.expanded_val_targets = self.expanded_target_data[expanded_val_indices]
+        # --- End Split ---
         
     def get_bounds(self):
         """
@@ -293,80 +337,84 @@ class PSOGatingProblem:
             x: Solution vector from PyGMO
             
         Returns:
-            Tuple of fitness values (loss,)
+            Tuple of fitness values (combined_loss,)
         """
-        # Convert solution vector to model parameters
+        # Set parameters in the gating model
         params = self._vector_to_parameters(x)
+        param_idx = 0
+        for model_param in self.gating_model.parameters():
+            if model_param.requires_grad:
+                model_param.data = params[param_idx]
+                param_idx += 1
         
-        # Update model with these parameters
-        self._update_model_parameters(params)
-        
-        # Evaluate model 
+        # Ensure model is in evaluation mode for consistent results
         self.moe_model.eval()
         self.gating_model.eval()
         
-        with torch.no_grad():
-            # Reset expert usage statistics
-            self.gating_model.reset_usage_stats()
-            
-            # Forward pass through gating and MoE model
-            train_gates = self.gating_model(self.train_inputs)
-            train_outputs = self.moe_model(self.train_inputs, gates=train_gates)
-            
-            val_gates = self.gating_model(self.val_inputs)
-            val_outputs = self.moe_model(self.val_inputs, gates=val_gates)
-            
-            # Calculate training loss
-            loss_fn = nn.BCEWithLogitsLoss()
-            # Squeeze both outputs[0] (logits) and targets to match shape [N_train]
-            train_loss = loss_fn(train_outputs[0].squeeze(), self.train_targets.squeeze().float()).item()
-            
-            # Validation phase
-            with torch.no_grad():
-                self.moe_model.eval()
-                # Model returns tuple: (outputs, gates, gates)
-                val_outputs_tuple = self.moe_model(self.val_inputs)
-                val_outputs = val_outputs_tuple[0] # Extract actual outputs/logits
-                
-                # Squeeze both outputs[0] (logits) and targets to match shape [N_val]
-                val_loss = loss_fn(val_outputs.squeeze(), self.val_targets.squeeze().float()).item()
-                self.moe_model.train() # Set back to train mode
-            
-            # Get expert usage statistics
-            expert_usage = self.gating_model.get_expert_usage()
-            
-            # Calculate load balancing score
-            load_balance = self._calculate_load_balance(expert_usage)
+        loss_fn = nn.BCEWithLogitsLoss()
+        total_val_loss = 0.0
+        total_accuracy = 0.0
+        total_load_balance = 0.0
+        num_batches = 0
         
-        # Combined fitness score (lower is better)
-        fitness = train_loss - self.load_balance_coef * load_balance
+        with torch.no_grad():
+            # Use validation data for fitness evaluation
+            # Gating model expects encoded inputs [ValBatch*Window, EncodedDim]
+            val_gates = self.gating_model(self.encoded_val_inputs)
+            
+            # Main MoE model expects dictionary input [ValBatch, Window, Feat]
+            # It returns (final_output, gates)
+            val_outputs, returned_gates = self.moe_model(self.val_inputs_dict, gates=val_gates)
+            
+            # Ensure targets are float and have same shape as output for BCEWithLogitsLoss
+            # The moe_model output is [ValBatch, 1], so use self.val_targets
+            val_loss = loss_fn(val_outputs, self.val_targets.float()).item()
+
+            # Calculate accuracy
+            # Use original targets (shape [ValBatch, 1])
+            predicted = (torch.sigmoid(val_outputs) > 0.5).float() # Shape [ValBatch, 1]
+            accuracy = (predicted == self.val_targets).float().mean().item()
+            
+            # Calculate load balancing score (variance of gate usage)
+            # Lower variance is better for load balancing
+            gate_usage_variance = torch.var(val_gates.mean(dim=0)).item()
+            load_balance_score = gate_usage_variance 
+
+            total_val_loss = val_loss
+            total_accuracy = accuracy
+            total_load_balance = load_balance_score
+            
+        # Combined fitness: minimize loss and load imbalance
+        fitness = total_val_loss + self.load_balance_coef * total_load_balance # Lower is better
         
         # Track best solution
         if fitness < self.best_fitness:
             self.best_fitness = fitness
-            self.best_solution = x.copy()
-            
-        # Add to history
-        self.history.append({
-            'fitness': fitness,
-            'loss': train_loss,
-            'accuracy': 0.0,  # Assuming accuracy is not available in the current implementation
-            'load_balance': load_balance
-        })
+            self.best_solution = x
         
-        return (fitness,)
+        # Add detailed history entry
+        self.eval_count += 1
+        self.history.append({
+            'eval_count': self.eval_count,
+            'fitness': fitness,
+            'loss': total_val_loss,
+            'accuracy': total_accuracy,
+            'load_balance': total_load_balance
+        })
+            
+        return [fitness]
     
     def optimize(self, algorithm_id='pso', seed=42, verbosity=1):
         """
-        Run the optimization process.
+        Run the PSO optimization process.
         
         Args:
-            algorithm_id: PyGMO algorithm to use
+            algorithm_id: Algorithm ID ('pso', 'abc', 'sade')
             seed: Random seed
-            verbosity: Verbosity level
+            verbosity: PyGMO verbosity level
             
         Returns:
-            Optimized gating model
+            Optimized gating model, full history, and algorithm ID
         """
         # Set seed for reproducibility
         random.seed(seed)
@@ -377,14 +425,16 @@ class PSOGatingProblem:
         prob = pg.problem(self)
         
         # Select algorithm
+        algo = None # Initialize
+        generations = 10 # Define generations
         if algorithm_id == 'pso':
-            algo = pg.algorithm(pg.pso(gen=10, omega=0.7298, eta1=2.05, eta2=2.05, max_vel=0.5, seed=seed))
+            algo = pg.algorithm(pg.pso(gen=generations, seed=seed))
         elif algorithm_id == 'sade':
-            algo = pg.algorithm(pg.sade(gen=10, variant=2, variant_adptv=1, ftol=1e-6, xtol=1e-6))
+            algo = pg.algorithm(pg.sade(gen=generations, seed=seed))
         elif algorithm_id == 'abc':
-            algo = pg.algorithm(pg.bee_colony(gen=10, limit=20, seed=seed))
+            algo = pg.algorithm(pg.bee_colony(gen=generations, limit=1, seed=seed))
         else:
-            algo = pg.algorithm(pg.pso(gen=10, seed=seed))
+            algo = pg.algorithm(pg.pso(gen=generations, seed=seed))
         
         # Set verbosity
         algo.set_verbosity(verbosity)
@@ -392,25 +442,48 @@ class PSOGatingProblem:
         # Create population
         pop = pg.population(prob, size=self.population_size, seed=seed)
         
-        # Evolve population
+        # --- History Logging (Generation-based) ---
+        self.history = [] # Ensure history is clear before starting
         start_time = time.time()
-        pop = algo.evolve(pop)
+        
+        for gen in range(generations):
+            pop = algo.evolve(pop)
+            # Log population stats after each generation
+            fitnesses = pop.get_f()
+            best_idx = pop.best_idx()
+            self.history.append({
+                'generation': gen + 1,
+                'best_fitness': fitnesses[best_idx][0],
+                'avg_fitness': np.mean(fitnesses),
+                'eval_count': pop.problem.get_fevals() # Use PyGMO's built-in method
+                # Add other relevant metrics if available directly from population/problem
+            })
+            # Optional: Log more details if needed
+        
+        evolve_end = time.time()
+        # --- End History Logging ---
+        
         end_time = time.time()
         
-        # Extract best solution
-        best_idx = pop.best_idx()
-        best_x = pop.get_x()[best_idx]
-        best_f = pop.get_f()[best_idx]
+        best_x = pop.champion_x
+        best_f = pop.champion_f[0]
         
-        # Update model with best solution
+        # --- REMOVED old history append logic ---
+        
+        print(f"   PSO Exit condition -- {algo.get_extra_info()}")
+        print(f"Gating optimization completed in {end_time - start_time:.2f} seconds")
+        print(f"Best gating fitness: {best_f}")
+        
+        # Set the gating model parameters to the best found solution
         best_params = self._vector_to_parameters(best_x)
-        self._update_model_parameters(best_params)
+        param_idx = 0
+        for model_param in self.gating_model.parameters():
+            if model_param.requires_grad:
+                model_param.data = best_params[param_idx]
+                param_idx += 1
         
-        # Print summary
-        print(f"PSO gating optimization completed in {end_time - start_time:.2f} seconds")
-        print(f"Best fitness: {best_f[0]}")
-        
-        return self.gating_model
+        # Return the optimized gating model, full history, and algorithm ID
+        return self.gating_model, self.history, algorithm_id
 
 
 class MoEWithPSOGating(nn.Module):
@@ -506,7 +579,8 @@ class MoEWithPSOGating(nn.Module):
 
 # Utility functions for PSO gating optimization
 
-def optimize_gating_with_pso(model: MoEWithPSOGating, 
+def optimize_gating_with_pso(moe_model: nn.Module, 
+                           gating_model: PSOLaplaceGating, 
                            data: Tuple[torch.Tensor, torch.Tensor],
                            algorithm: str = 'pso',
                            population_size: int = 20,
@@ -516,7 +590,8 @@ def optimize_gating_with_pso(model: MoEWithPSOGating,
     Optimize gating mechanism using PSO.
     
     Args:
-        model: MoE model with PSO gating
+        moe_model: MoE model with PSO gating
+        gating_model: The gating model to optimize
         data: Tuple of (inputs, targets) for training/evaluation
         algorithm: PSO variant to use ('pso', 'abc', 'sade')
         population_size: Size of population
@@ -524,32 +599,35 @@ def optimize_gating_with_pso(model: MoEWithPSOGating,
         seed: Random seed
         
     Returns:
-        Optimized model
+        Optimized model and full history
     """
     inputs, targets = data
     
     # Configure the PSO problem
     problem = PSOGatingProblem(
-        moe_model=model,
-        gating_model=model.gating,
+        moe_model=moe_model,
+        gating_model=gating_model,
         input_data=inputs,
+        original_input_dict={},
         target_data=targets,
+        original_target_data=targets,
+        window_size=1,
         validation_split=0.2,
         population_size=population_size,
-        load_balance_coef=load_balance_coef
+        load_balance_coef=load_balance_coef,
+        device='cpu',
+        seed=seed
     )
     
     # Run optimization
-    optimized_gating = problem.optimize(
+    optimized_gating, history, algo_used = problem.optimize(
         algorithm_id=algorithm,
         seed=seed,
         verbosity=1
     )
     
-    # Print summary of optimization
-    expert_usage = model.get_expert_usage().cpu().numpy()
-    print("\nExpert usage after PSO optimization:")
-    for i, usage in enumerate(expert_usage):
-        print(f"  Expert {i+1}: {usage:.4f}")
+    # Print final metrics if needed (or rely on history)
+    print(f"\nPSO Gating Optimization - Final Best Fitness: {problem.best_fitness:.4f}")
     
-    return model 
+    # Return the optimized gating model and the history
+    return optimized_gating, history 

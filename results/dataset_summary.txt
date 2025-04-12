@@ -1,7 +1,7 @@
 Migraine Prediction Dataset Summary
 ===================================
 
-Data range: 2023-01-01 to 2023-01-30
+Data range: 2022-12-30 to 2023-02-01
 Total samples: 56
 Available modalities: eeg, weather, sleep
 
@@ -10,4 +10,4 @@ Features per modality:
   - weather: 12 features
   - sleep: 9 features
 
-Positive rate (migraine events): 83.93%
+Positive rate (migraine events): 100.00%

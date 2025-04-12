@@ -361,7 +361,7 @@ def generate_migraine_events(patient_ids, date_range, output_dir):
         migraine_dates[patient_id] = []
         
         # Patient-specific migraine frequency (average migraines per month)
-        migraine_frequency = np.random.uniform(0.5, 4)
+        migraine_frequency = np.random.uniform(0.1, 2)
         expected_migraines = int(migraine_frequency * len(date_range) / 30)
         
         # Generate random migraine dates

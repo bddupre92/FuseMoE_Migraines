@@ -12,6 +12,7 @@ from typing import List, Dict, Tuple, Optional, Union
 from utils.config import MoEConfig
 from core.sparse_moe import MLP, MoE
 import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
 
 class ExpertEvolutionProblem:
     """
@@ -83,6 +84,9 @@ class ExpertEvolutionProblem:
         self.best_model = None
         self.history = []
         
+        self.eval_count = 0
+        self.best_x = None
+
     def get_bounds(self):
         """
         Get the bounds of the decision variables.
@@ -207,14 +211,16 @@ class ExpertEvolutionProblem:
             self.best_model = model
             
         # Add to history
+        self.eval_count += 1
         self.history.append({
+            'eval_count': self.eval_count,
             'fitness': fitness,
             'loss': val_loss,
             'accuracy': accuracy,
             'specialization': specialization_score
         })
         
-        return (fitness,)
+        return [fitness]
     
     def _calculate_specialization(self, expert_usage):
         """
@@ -255,14 +261,16 @@ class ExpertEvolutionProblem:
         prob = pg.problem(self)
         
         # Select algorithm
+        algo = None # Initialize algo
+        generations = 10 # Define generations here
         if algorithm_id == 'sade':
-            algo = pg.algorithm(pg.sade(gen=10, variant=2, variant_adptv=1, ftol=1e-6, xtol=1e-6))
+            algo = pg.algorithm(pg.sade(gen=generations, variant=2, variant_adptv=1, ftol=1e-6, xtol=1e-6))
         elif algorithm_id == 'pso':
-            algo = pg.algorithm(pg.pso(gen=10, omega=0.7298, eta1=2.05, eta2=2.05, max_vel=0.5, seed=seed))
+            algo = pg.algorithm(pg.pso(gen=generations, omega=0.7298, eta1=2.05, eta2=2.05, max_vel=0.5, seed=seed))
         elif algorithm_id == 'cmaes':
-            algo = pg.algorithm(pg.cmaes(gen=10, sigma0=0.5, ftol=1e-6, xtol=1e-6, seed=seed))
+            algo = pg.algorithm(pg.cmaes(gen=generations, sigma0=0.5, ftol=1e-6, xtol=1e-6, seed=seed))
         else:
-            algo = pg.algorithm(pg.sade(gen=10))
+            algo = pg.algorithm(pg.sade(gen=generations))
         
         # Set verbosity
         algo.set_verbosity(1)
@@ -270,25 +278,46 @@ class ExpertEvolutionProblem:
         # Create population
         pop = pg.population(prob, size=self.population_size, seed=seed)
         
-        # Evolve population
+        # --- History Logging (Generation-based) ---
+        self.history = [] # Ensure history is clear before starting
         start_time = time.time()
-        pop = algo.evolve(pop)
+        
+        for gen in range(generations):
+            pop = algo.evolve(pop)
+            # Log population stats after each generation
+            fitnesses = pop.get_f()
+            best_idx = pop.best_idx()
+            self.history.append({
+                'generation': gen + 1,
+                'best_fitness': fitnesses[best_idx][0], 
+                'avg_fitness': np.mean(fitnesses), # Add average fitness
+                'eval_count': pop.problem.get_fevals() # Use PyGMO's built-in method
+            })
+            # Optional: Log more details if needed, like champion_x, etc.
+            
+            # Early stopping condition (example)
+            # if algo.get_extra_info() contains stopping criteria, break
+        
+        evolve_end = time.time()
+        # --- End History Logging ---
+        
         end_time = time.time()
         
-        # Extract best solution
-        best_idx = pop.best_idx()
-        best_x = pop.get_x()[best_idx]
-        best_f = pop.get_f()[best_idx]
+        best_solution_x = pop.champion_x
+        best_fitness = pop.champion_f[0]
+        expert_configs = self._decode_solution(best_solution_x)
         
-        # Print summary
+        # --- REMOVED old history append/clearing logic --- 
+        
+        print(f"   Exit condition -- {algo.get_extra_info()}")
         print(f"Optimization completed in {end_time - start_time:.2f} seconds")
-        print(f"Best fitness: {best_f[0]}")
+        print(f"Best fitness: {best_fitness}")
         
         # Create and return the best model
-        expert_configs = self._decode_solution(best_x)
-        best_model = self._create_model(expert_configs)
+        best_model = self._create_model(expert_configs) # Keep this line if best_model is still needed
         
-        return best_model, expert_configs
+        # Return the full history, expert configs, and the algorithm used
+        return self.history, expert_configs, algorithm_id
 
 
 class EvolutionaryMLP(MLP):
@@ -392,11 +421,11 @@ def create_evolutionary_moe(config: MoEConfig, input_size: int, output_size: int
     )
     
     # Run optimization
-    best_model, expert_configs = problem.optimize(algorithm_id=algorithm)
+    history, expert_configs, algorithm_id = problem.optimize(algorithm_id=algorithm)
     
     # Print expert configurations
     print("\nEvolutionarily optimized expert configurations:")
     for i, conf in enumerate(expert_configs):
         print(f"  Expert {i+1}: Hidden size={conf['hidden_size']}, Activation={conf['activation'].__class__.__name__}")
         
-    return best_model 
+    return history, expert_configs, algorithm_id 

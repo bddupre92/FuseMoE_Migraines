@@ -123,8 +123,26 @@ class MigraineDataPipeline:
         except TypeError as sort_e:
             print(f"Warning: Could not sort events by start_time due to type error: {sort_e}. Events may be out of order.")
 
-        self.migraine_events = all_events
-        print(f"Loaded a total of {len(self.migraine_events)} migraine events.")
+        # --- Deduplicate events based on start_time --- #
+        deduplicated_events = []
+        seen_start_times = set()
+        for event in all_events:
+            start_time = event.get('start_time')
+            if start_time is not None and pd.notna(start_time):
+                if start_time not in seen_start_times:
+                    deduplicated_events.append(event)
+                    seen_start_times.add(start_time)
+            else:
+                # Keep events with missing/invalid start times? Or discard?
+                # For now, let's keep them if they were added to all_events previously.
+                deduplicated_events.append(event)
+        
+        num_removed = len(all_events) - len(deduplicated_events)
+        if num_removed > 0:
+            print(f"Removed {num_removed} duplicate events based on start_time.")
+            
+        self.migraine_events = deduplicated_events
+        print(f"Loaded a total of {len(self.migraine_events)} unique migraine events.")
         return self.migraine_events
     
     def process_eeg_data(self, file_pattern: str = "eeg_*.npy") -> pd.DataFrame:
@@ -443,18 +461,57 @@ class MigraineDataPipeline:
         
         print(f"Shape after joining all modalities: {multimodal_df.shape}")
         
-        # --- TODO: Add Migraine Target Label --- #
-        # This part needs to be implemented by aligning self.migraine_events 
-        # to the multimodal_df.index and calculating the target
-        # For now, initialize the column
-        multimodal_df['migraine_within_horizon'] = False
-        print("Placeholder for migraine target label added.")
-        # Example (needs refinement based on migraine_events structure):
-        # if self.migraine_events:
-        #     migraine_times = pd.to_datetime([e['start_time'] for e in self.migraine_events if 'start_time' in e])
-        #     migraine_series = pd.Series(True, index=migraine_times)
-        #     # Align and check horizon...
+        # --- Add Migraine Target Label --- #
+        # Align self.migraine_events to the multimodal_df.index and calculate the target
+        multimodal_df['migraine_within_horizon'] = False # Initialize to False
+        print("Calculating migraine target label...")
         
+        if self.migraine_events:
+            # Ensure migraine start times are Timestamps
+            valid_event_times = []
+            for event in self.migraine_events:
+                if 'start_time' in event and pd.notna(event['start_time']):
+                    # Ensure it's a Timestamp object
+                    event_ts = pd.Timestamp(event['start_time'])
+                    valid_event_times.append(event_ts)
+                else:
+                    print(f"Warning: Skipping event with missing or invalid start_time: {event}")
+            
+            if valid_event_times:
+                # Sort event times for efficiency
+                valid_event_times.sort()
+                # --- Add Debug Print ---
+                print(f"DEBUG: First 10 valid migraine event times: {valid_event_times[:10]}")
+                # --- End Debug Print ---
+                horizon_delta = pd.Timedelta(hours=prediction_horizon)
+                num_positive = 0
+                
+                # Iterate through the multimodal dataframe index (timestamps)
+                for current_ts in multimodal_df.index:
+                    # Define the prediction window
+                    window_start = current_ts
+                    window_end = current_ts + horizon_delta
+                    
+                    # Check if any migraine event falls within this window
+                    # This can be optimized if performance is critical on large datasets
+                    found_event_in_horizon = False
+                    for event_ts in valid_event_times:
+                        if window_start <= event_ts < window_end:
+                            found_event_in_horizon = True
+                            break # Found one, no need to check further for this timestamp
+                    
+                    if found_event_in_horizon:
+                        multimodal_df.loc[current_ts, 'migraine_within_horizon'] = True
+                        num_positive += 1
+                
+                print(f"Calculated target labels. Found {num_positive} positive samples (migraine within {prediction_horizon}h horizon).")
+            else:
+                print("Warning: No valid migraine event times found to create target labels.")
+        else:
+            print("Warning: No migraine events loaded. Target labels will all be False.")
+            
+        # Convert boolean target to integer (0 or 1) if preferred
+        # multimodal_df['migraine_within_horizon'] = multimodal_df['migraine_within_horizon'].astype(int)
 
         # Forward fill missing values (carry forward last observation)
         print("Forward filling missing values...")
@@ -545,9 +602,6 @@ class MigraineDataPipeline:
         else:
             print("No imputation method specified. Skipping imputation.")
         # >>> END IMPUTATION BLOCK <<<
-
-        # Create target variable (e.g., binary indicator for migraine within prediction_horizon)
-        # ... rest of the method ...
 
         return multimodal_df
     

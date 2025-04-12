@@ -91,44 +91,87 @@ class PyGMOFuseMoE(nn.Module):
                 for _ in range(num_experts)
             ])
     
-    def forward(self, x, gates=None):
+    def forward(self, inputs, patient_id=None, gates=None):
         """
-        Forward pass through the model.
+        Forward pass handling dictionary inputs (training/eval) or tensor inputs (optimization).
         
         Args:
-            x: Input tensor [batch_size, input_size]
+            inputs: Dict[str, Tensor[Batch, Window, Features]] or Tensor[NumSamples, EncodedDim]
+            patient_id: Optional patient identifier for adaptation
             gates: Pre-computed gates (optional)
             
         Returns:
-            outputs: Model outputs [batch_size, output_size]
+            If inputs is dict: (final_output [Batch, OutputSize], gates [Batch*Window, NumExperts])
+            If inputs is tensor: (output [NumSamples, OutputSize], gates [NumSamples, NumExperts])
         """
+        # --- Debug Print --- 
+        print(f"DEBUG [forward]: Input type: {type(inputs)}")
+        if isinstance(inputs, torch.Tensor):
+            print(f"DEBUG [forward]: Input tensor shape: {inputs.shape}")
+        elif isinstance(inputs, dict):
+            print(f"DEBUG [forward]: Input dict keys: {list(inputs.keys())}")
+        # --- End Debug Print ---
+
         if self.experts is None:
             raise RuntimeError("Model experts are not initialized. Call optimize_model() first.")
+
+        # --- Determine Execution Path Based on Input Type --- 
+        if isinstance(inputs, dict):
+            # === Dictionary Input Path (Training/Evaluation) ===
+            # Determine batch_size and window_size from inputs dictionary
+            batch_size = -1
+            window_size = -1
+            for modality in self.modalities:
+                if modality in inputs and isinstance(inputs[modality], torch.Tensor):
+                    # Assuming input shape [Batch, Window, Features]
+                    batch_size, window_size, _ = inputs[modality].shape
+                    break
+            
+            if batch_size == -1 or window_size == -1:
+                 # Raise the specific error that was previously encountered incorrectly
+                raise ValueError("Could not determine batch_size or window_size from dict input.")
+
+            # Encode multi-modal inputs -> x shape: [Batch*Window, encoded_dim]
+            x = self.encode_modalities(inputs)
+            num_samples = x.shape[0] # Batch * Window
+
+        elif isinstance(inputs, torch.Tensor):
+            # === Tensor Input Path (PyGMO Optimization) ===
+            # Assume input is already encoded: Tensor[NumSamples, EncodedDim]
+            x = inputs
+            num_samples = x.shape[0]
+            # No need to determine batch_size/window_size here
+
+        else:
+            # === Unsupported Input Type ===
+            raise TypeError(f"Unsupported input type for forward pass: {type(inputs)}")
         
-        batch_size = x.size(0)
-        
-        # Get gating weights if not provided
+        # --- Common Gating and Expert Logic --- 
         if gates is None:
-            if self.use_pso_gating:
-                gates = self.gating(x)  # [batch_size, num_experts]
+            # Apply patient-specific gating if enabled (Placeholder)
+            if self.patient_adaptation and patient_id is not None:
+                gates = self.gating(x) # Defaulting to standard gating for now
             else:
-                gates = self.gating(x)  # [batch_size, num_experts]
+                gates = self.gating(x) # Shape: [NumSamples, num_experts]
         
-        # Get expert outputs
+        # Apply experts
         expert_outputs = []
-        for expert in self.experts:
-            expert_out = expert(x)  # [batch_size, output_size]
-            expert_outputs.append(expert_out)
+        for i, expert in enumerate(self.experts):
+            expert_output = expert(x) # Shape: [NumSamples, output_size]
+            expert_outputs.append(expert_output * gates[:, i].unsqueeze(1))
         
-        # Stack expert outputs
-        stacked_experts = torch.stack(expert_outputs, dim=1)  # [batch_size, num_experts, output_size]
-        
-        # Apply gates
-        gates_expanded = gates.unsqueeze(-1)  # [batch_size, num_experts, 1]
-        combined = (stacked_experts * gates_expanded).sum(dim=1)  # [batch_size, output_size]
-        
-        # Return output, gating weights (router_logits), and gating weights again (expert_mask)
-        return combined, gates, gates
+        # Combine expert outputs -> Shape: [NumSamples, output_size]
+        combined_output = torch.stack(expert_outputs, dim=1).sum(dim=1)
+
+        # --- Final Output Formatting --- 
+        if isinstance(inputs, dict):
+            # Reshape and select last time step for dictionary input
+            final_output = combined_output.reshape(batch_size, window_size, self.output_size)
+            final_output = final_output[:, -1, :] # Select last time step -> [Batch, output_size]
+            return final_output, gates # Return final step output and original [Batch*Window, num_experts] gates
+        else: # Tensor input path
+            # Return raw combined output for tensor input
+            return combined_output, gates # Return [NumSamples, output_size], [NumSamples, num_experts]
     
     def get_expert_usage(self):
         """Return expert usage statistics from gating network"""
@@ -184,6 +227,8 @@ class PyGMOFuseMoE(nn.Module):
             print(f"WARN: Could not expand targets. Target shape {targets.shape}, Batch {batch_size}, Window {window_size}")
             expanded_targets = targets # Use original targets, likely causing issues downstream
 
+        optimization_history = {}
+
         # Step 1: Evolutionary expert optimization
         if self.use_evo_experts:
             print("\n--- Evolutionary Expert Optimization ---")
@@ -207,8 +252,12 @@ class PyGMOFuseMoE(nn.Module):
                 device=device
             )
             
-            # Run optimization
-            _, expert_configs = problem.optimize(algorithm_id=expert_algo, seed=seed)
+            # Run optimization and capture history
+            expert_history, expert_configs, expert_algo_used = problem.optimize(algorithm_id=expert_algo, seed=seed)
+            optimization_history['expert_evolution'] = {
+                'algorithm': expert_algo_used,
+                'history': expert_history # Now contains list of dicts per evaluation
+            }
             
             # Create experts from optimized configurations using ENCODED dimension
             self.experts = nn.ModuleList([
@@ -254,26 +303,34 @@ class PyGMOFuseMoE(nn.Module):
                 moe_model=self, # Pass the main model instance
                 gating_model=self.gating, # Pass the gating network
                 input_data=encoded_inputs.detach(), # Pass DETACHED encoded data
+                original_input_dict=inputs, # Pass the original unencoded dictionary
                 target_data=expanded_targets.detach(),       # Pass DETACHED and EXPANDED targets
+                original_target_data=targets.detach(), # Pass original targets for stratification
+                window_size=window_size,           # Pass window_size for index mapping
                 validation_split=0.2,
                 population_size=gating_pop_size,
-                load_balance_coef=load_balance_coef,
+                load_balance_coef=0.5,
                 device=device
             )
             
-            # Run optimization
-            self.gating = problem.optimize(
+            # Run optimization and capture history
+            self.gating, gating_history, gating_algo_used = problem.optimize(
                 algorithm_id=gating_algo,
                 seed=seed,
                 verbosity=1
             )
+            optimization_history['gating_pso'] = {
+                'algorithm': gating_algo_used,
+                'history': gating_history # Now contains list of dicts per evaluation
+            }
             
             print("\nPSO gating optimization complete.")
         
         end_time = time.time()
         print(f"\nTotal optimization time: {end_time - start_time:.2f} seconds")
         
-        return self
+        # Return self AND the history dictionary
+        return self, optimization_history
 
 
 class MigraineFuseMoE(nn.Module):
@@ -442,58 +499,97 @@ class MigraineFuseMoE(nn.Module):
         """
         if self.experts is None:
             raise RuntimeError("Model experts are not initialized. Call optimize_model() first.")
+
+        # Determine batch_size and window_size from inputs dictionary
+        batch_size = -1
+        window_size = -1
+        if isinstance(inputs, dict):
+            for modality in self.modalities:
+                if modality in inputs:
+                    # Assuming input shape [Batch, Window, Features]
+                    batch_size, window_size, _ = inputs[modality].shape
+                    break
+        elif isinstance(inputs, torch.Tensor):
+             # Handle direct tensor input - assume shape [Batch*Window, Features]
+             # We need a way to know the original window_size here.
+             # Let's assume window_size is passed or stored in config/self
+             # For now, let's try to infer if possible, otherwise raise error or use default
+             if hasattr(self.config, 'window_size'): # Check if window_size is in config
+                 window_size = self.config.window_size
+                 if inputs.shape[0] % window_size == 0:
+                     batch_size = inputs.shape[0] // window_size
+                 else:
+                      # Debug prints before raising the error
+                      print(f"DEBUG [MigraineFuseMoE.forward]: Handling tensor input.")
+                      print(f"DEBUG [MigraineFuseMoE.forward]: Shape of inputs tensor: {inputs.shape if hasattr(inputs, 'shape') else type(inputs)}")
+                      print(f"DEBUG [MigraineFuseMoE.forward]: Config window_size: {window_size}")
+                      print(f"DEBUG [MigraineFuseMoE.forward]: Inferred batch_size before error: {inputs.shape[0] // window_size if window_size else 'N/A'}")
+                      raise ValueError("Cannot infer batch_size from tensor input and window_size.")
+             else:
+                 # Debug prints before raising the error
+                 print(f"DEBUG [MigraineFuseMoE.forward]: Handling tensor input.")
+                 print(f"DEBUG [MigraineFuseMoE.forward]: Shape of inputs tensor: {inputs.shape if hasattr(inputs, 'shape') else type(inputs)}")
+                 print(f"DEBUG [MigraineFuseMoE.forward]: window_size not found in config.")
+                 raise ValueError("Window size needed for tensor input but not available in config.")
         
+        if batch_size == -1 or window_size == -1:
+             # Debug prints before raising the error
+            print(f"DEBUG [MigraineFuseMoE.forward]: Handling dict input or failed inference.")
+            print(f"DEBUG [MigraineFuseMoE.forward]: Shape of inputs dict:")
+            if isinstance(inputs, dict):
+                for key, tensor in inputs.items():
+                     print(f"  - {key}: {tensor.shape if hasattr(tensor, 'shape') else type(tensor)}")
+            else:
+                print(f"  - inputs type: {type(inputs)}")
+            print(f"DEBUG [MigraineFuseMoE.forward]: Determined batch_size: {batch_size}")
+            print(f"DEBUG [MigraineFuseMoE.forward]: Determined window_size: {window_size}")
+            raise ValueError("Could not determine batch_size or window_size from input.")
+
         # Handle the case when inputs is a tensor (for optimization compatibility)
         if isinstance(inputs, torch.Tensor):
-            x = inputs
+            x = inputs # Shape [Batch*Window, encoded_dim] (assuming already encoded if tensor)
         else:
             # Encode multi-modal inputs
+            # encode_modalities returns shape [Batch*Window, encoded_dim]
             x = self.encode_modalities(inputs)
         
         # If gates are provided, use them directly
         if gates is None:
             # Apply patient-specific gating if enabled
             if self.patient_adaptation and patient_id is not None:
-                patient_emb = self.patient_embedding(patient_id)
-                patient_gates = self.patient_gate(patient_emb)
-                
-                # Modify gates based on patient profile
-                if self.use_pso_gating:
-                    gates = self.gating(x)
-                    # Blend standard gates with patient-specific gates
-                    gates = 0.7 * gates + 0.3 * patient_gates
-                else:
-                    gates = 0.7 * self.gating(x) + 0.3 * patient_gates
+                # Placeholder for patient adaptation logic
+                # patient_emb = self.patient_embedding(patient_id)
+                # patient_gates = self.patient_gate(patient_emb)
+                # gates = ... # Combine standard and patient gates
+                gates = self.gating(x) # Defaulting to standard gating for now
             else:
                 # Standard gating
-                if self.use_pso_gating:
-                    gates = self.gating(x)
-                else:
-                    gates = self.gating(x)
+                gates = self.gating(x) # Shape: [Batch*Window, num_experts]
         
-        # Forward through experts
-        batch_size = x.size(0)
+        # Apply experts
         expert_outputs = []
-        for expert in self.experts:
-            expert_out = expert(x)  # [batch_size, output_size]
-            expert_outputs.append(expert_out)
+        for i, expert in enumerate(self.experts):
+            # Expert processes [Batch*Window, encoded_dim] -> [Batch*Window, output_size]
+            expert_output = expert(x)
+            expert_outputs.append(expert_output * gates[:, i].unsqueeze(1))
         
-        # Stack expert outputs
-        stacked_experts = torch.stack(expert_outputs, dim=1)  # [batch_size, num_experts, output_size]
-        
-        # Apply gates
-        gates_expanded = gates.unsqueeze(-1)  # [batch_size, num_experts, 1]
-        combined = (stacked_experts * gates_expanded).sum(dim=1)  # [batch_size, output_size]
+        # Combine expert outputs
+        # combined_output shape: [Batch*Window, output_size]
+        combined_output = torch.stack(expert_outputs, dim=1).sum(dim=1)
 
-        # Return output, gating weights (router_logits), and gating weights again (expert_mask)
-        return combined, gates, gates
+        # Reshape to [Batch, Window, output_size] and select the last time step
+        # output_size is likely 1 for binary classification
+        final_output = combined_output.reshape(batch_size, window_size, self.output_size)
+        final_output = final_output[:, -1, :] # Select last time step -> [Batch, output_size]
+        
+        # Return the final prediction and the raw gates (for usage analysis)
+        return final_output, gates
     
     def get_expert_usage(self):
-        """Return expert usage statistics from gating network"""
-        if self.use_pso_gating:
-            return self.gating.get_expert_usage()
-        else:
-            return None
+        """Retrieve expert usage statistics (if available)."""
+        if hasattr(self.gating, 'get_usage_counts'):
+            return self.gating.get_usage_counts()
+        return None # Or implement based on stored gates if needed
     
     def predict_with_warning_time(self, inputs, threshold=0.7):
         """
@@ -594,6 +690,8 @@ class MigraineFuseMoE(nn.Module):
             print(f"WARN: Could not expand targets. Target shape {targets.shape}, Batch {batch_size}, Window {window_size}")
             expanded_targets = targets # Use original targets, likely causing issues downstream
 
+        optimization_history = {}
+
         # Step 1: Evolutionary expert optimization
         if self.use_evo_experts:
             print("\n--- Evolutionary Expert Optimization ---")
@@ -617,8 +715,12 @@ class MigraineFuseMoE(nn.Module):
                 device=device
             )
             
-            # Run optimization
-            _, expert_configs = problem.optimize(algorithm_id=expert_algo, seed=seed)
+            # Run optimization and capture history
+            expert_history, expert_configs, expert_algo_used = problem.optimize(algorithm_id=expert_algo, seed=seed)
+            optimization_history['expert_evolution'] = {
+                'algorithm': expert_algo_used,
+                'history': expert_history # Now contains list of dicts per evaluation
+            }
             
             # Create experts from optimized configurations using ENCODED dimension
             self.experts = nn.ModuleList([
@@ -664,26 +766,34 @@ class MigraineFuseMoE(nn.Module):
                 moe_model=self, # Pass the main model instance
                 gating_model=self.gating, # Pass the gating network
                 input_data=encoded_inputs.detach(), # Pass DETACHED encoded data
+                original_input_dict=inputs, # Pass the original unencoded dictionary
                 target_data=expanded_targets.detach(),       # Pass DETACHED and EXPANDED targets
+                original_target_data=targets.detach(), # Pass original targets for stratification
+                window_size=window_size,           # Pass window_size for index mapping
                 validation_split=0.2,
                 population_size=gating_pop_size,
-                load_balance_coef=load_balance_coef,
+                load_balance_coef=0.5,
                 device=device
             )
             
-            # Run optimization
-            self.gating = problem.optimize(
+            # Run optimization and capture history
+            self.gating, gating_history, gating_algo_used = problem.optimize(
                 algorithm_id=gating_algo,
                 seed=seed,
                 verbosity=1
             )
+            optimization_history['gating_pso'] = {
+                'algorithm': gating_algo_used,
+                'history': gating_history # Now contains list of dicts per evaluation
+            }
             
             print("\nPSO gating optimization complete.")
         
         end_time = time.time()
         print(f"\nTotal optimization time: {end_time - start_time:.2f} seconds")
         
-        return self
+        # Return self AND the history dictionary
+        return self, optimization_history
 
 
 def create_pygmo_fusemoe(config: MoEConfig,

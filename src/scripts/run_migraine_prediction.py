@@ -23,6 +23,9 @@ import json
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn as nn
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, auc, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+import logging # Make sure logging is imported
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -159,6 +162,15 @@ def parse_args():
     parser.add_argument('--load_base_model', type=str, default=None,
                       help='Path to base model for patient adaptation')
     
+    # Cache Control
+    parser.add_argument('--no-cache', action='store_true',
+                        help='Disable the use of cached data during preprocessing.')
+
+    # Pipeline Config Path
+    parser.add_argument('--config-path', type=str, 
+                        default='src/preprocessing/migraine_preprocessing/config.yaml',
+                        help='Path to the data pipeline configuration YAML file.')
+                        
     # >>> ADDED IMPUTATION ARGUMENTS <<<
     parser.add_argument('--imputation_method', type=str, default='knn',
                       choices=['knn', 'iterative', 'none'], # Use strings only
@@ -195,7 +207,7 @@ def get_modality_experts_config(fusemoe_data):
     total_experts = 8
     experts_per_modality = {}
     
-    # If we have all four modalities
+    # If we have all four modalities 
     if len(modalities) == 4:
         # Allocate experts based on feature importance for migraine
         experts_per_modality = {
@@ -226,158 +238,90 @@ def get_modality_experts_config(fusemoe_data):
     return {m: experts_per_modality.get(m, 0) for m in modalities}
 
 
-def evaluate_model(model, test_data):
+def evaluate_model(model, X_test, y_test, device):
     """
-    Evaluate model on test data.
+    Evaluate the trained FuseMOE model on test data.
     
     Args:
-        model: Trained FuseMOE model
-        test_data: Test data dictionary
+        model: Trained MigraineFuseMoE model.
+        X_test: Dictionary of test data tensors for each modality.
+        y_test: Test target tensor.
+        device: Device to run evaluation on.
         
     Returns:
-        Dictionary of evaluation metrics
+        Dictionary containing evaluation metrics.
     """
-    # Set model to evaluation mode
     model.eval()
+    model.to(device)
     
-    # Extract test data
-    X_test = test_data['X']
-    y_test = test_data['y']
-    
-    # Make predictions
-    all_predictions = []
-    all_true_labels = []
-    modality_contributions = []
-    expert_usages = []
-    
+    # Move test data to the correct device
+    X_test_dev = {mod: tensor.to(device) for mod, tensor in X_test.items()}
+    y_test_dev = y_test.to(device)
+
     with torch.no_grad():
-        for i in range(len(X_test)):
-            # Convert to model input format
-            x_dict = X_test[i]
-            x_batch = {}
-            
-            for modality, features in x_dict.items():
-                x_batch[modality] = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
-            
-            # Get model prediction (output has shape [TimeSteps, 1])
-            output, router_logits, expert_mask = model(x_batch)
-            # Take the prediction from the last time step
-            last_step_output = output[-1]
-            prediction = torch.sigmoid(last_step_output).item()
-            
-            # Store results
-            all_predictions.append(prediction)
-            all_true_labels.append(y_test[i])
-            
-            # Store modality contributions (if available)
-            if hasattr(model, 'get_modality_importance'):
-                modality_importance = model.get_modality_importance(x_batch)
-                modality_contributions.append(modality_importance)
-            
-            # Store expert usage (if available)
-            if expert_mask is not None:
-                expert_usages.append(expert_mask.cpu().numpy())
+        outputs, gates = model(X_test_dev)
+        probs = torch.sigmoid(outputs).cpu().numpy() # Probabilities needed for AUC
+        predicted = (probs > 0.5).astype(int)
+        y_true = y_test_dev.cpu().numpy().astype(int)
+
+    accuracy = accuracy_score(y_true, predicted)
+    precision = precision_score(y_true, predicted, zero_division=0)
+    recall = recall_score(y_true, predicted, zero_division=0)
+    f1 = f1_score(y_true, predicted, zero_division=0)
     
-    # Calculate metrics
-    all_predictions = np.array(all_predictions)
-    all_true_labels = np.array(all_true_labels)
-    
-    # Binary predictions (threshold 0.5)
-    binary_predictions = (all_predictions >= 0.5).astype(int)
-    
-    # Calculate metrics
-    accuracy = np.mean(binary_predictions == all_true_labels)
-    
-    # Calculate precision, recall, f1 score
-    true_positives = np.sum((binary_predictions == 1) & (all_true_labels == 1))
-    false_positives = np.sum((binary_predictions == 1) & (all_true_labels == 0))
-    false_negatives = np.sum((binary_predictions == 0) & (all_true_labels == 1))
-    
-    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-    
-    # Return results
-    results = {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'predictions': all_predictions,
-        'true_labels': all_true_labels,
-        'modality_contributions': modality_contributions,
-        'expert_usages': expert_usages
+    # Calculate AUC
+    try:
+        auc = roc_auc_score(y_true, probs) 
+    except ValueError as e:
+        # Handle cases where AUC cannot be computed (e.g., only one class present)
+        print(f"Warning: Could not compute AUC: {e}")
+        auc = float('nan') # Assign NaN if AUC calculation fails
+
+    metrics = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "auc": auc # Add AUC to metrics
     }
     
-    return results
+    # Optional: Get expert usage if needed for analysis
+    expert_usage = model.get_expert_usage()
+    if expert_usage is not None:
+        metrics['expert_usage'] = expert_usage
+        
+    return metrics, probs, y_true # Return probs and y_true for ROC curve
 
 
-def visualize_results(results, model, test_data, output_dir):
+def visualize_results(results_dir, metrics, y_true, probs, optimization_history, model=None, X_test=None):
     """
-    Visualize model results.
+    Generate visualizations of model evaluation results.
     
     Args:
-        results: Evaluation results
-        model: Trained model
-        test_data: Test data
-        output_dir: Directory to save visualizations
+        results_dir: Directory to save plots.
+        metrics: Dictionary of evaluation metrics (including AUC).
+        y_true: True labels from test set.
+        probs: Predicted probabilities from test set.
+        optimization_history: Dictionary containing optimization history.
+        model: Optional trained model for trigger analysis.
+        X_test: Optional test data for trigger analysis.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 1. Plot ROC curve
-    plot_roc_curve(
-        results['true_labels'],
-        results['predictions'],
-        title="Migraine Prediction ROC Curve",
-        output_path=os.path.join(output_dir, 'roc_curve.png')
-    )
-    
-    # 2. Plot expert usage
-    if results['expert_usages']:
-        expert_usage = np.mean(np.vstack(results['expert_usages']), axis=0)
-        expert_names = [f"Expert {i+1}" for i in range(len(expert_usage))]
-        plot_expert_usage(
-            expert_usage,
-            expert_names,
-            title="Expert Usage in Migraine Prediction",
-            output_path=os.path.join(output_dir, 'expert_usage.png')
-        )
-    
-    # 3. Plot modality importance
-    if results['modality_contributions']:
-        modality_importance = np.mean(np.vstack(results['modality_contributions']), axis=0)
-        modality_names = test_data['modalities']
-        plot_modality_importance(
-            modality_importance,
-            modality_names,
-            title="Modality Importance for Migraine Prediction",
-            output_path=os.path.join(output_dir, 'modality_importance.png')
-        )
-    
-    # 4. Plot prediction timeline
-    plt.figure(figsize=(12, 6))
-    plt.plot(results['true_labels'], label='Actual Migraines', marker='o', linestyle='--')
-    plt.plot(results['predictions'], label='Predicted Risk', alpha=0.7)
-    plt.axhline(y=0.5, color='r', linestyle='--', alpha=0.3, label='Decision Threshold')
-    plt.xlabel('Time')
-    plt.ylabel('Migraine Risk / Occurrence')
-    plt.title('Migraine Prediction Timeline')
-    plt.legend()
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'prediction_timeline.png'))
-    plt.close()
-    
-    # 5. Save numerical results
-    metrics = {
-        'accuracy': float(results['accuracy']),
-        'precision': float(results['precision']),
-        'recall': float(results['recall']),
-        'f1_score': float(results['f1_score'])
-    }
-    
-    with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
-        json.dump(metrics, f, indent=4)
+    print("\nGenerating visualizations...")
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    # --- ROC Curve --- 
+    plt.figure(figsize=(10, 6))
+    if not np.isnan(metrics.get('auc', float('nan'))):
+        fpr, tpr, _ = roc_curve(y_true, probs)
+        roc_auc = metrics['auc']
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+    else:
+         print("Skipping ROC curve plot as AUC is NaN.")
+         # Optionally plot a default line or message
+         plt.text(0.5, 0.5, 'AUC could not be calculated', horizontalalignment='center', verticalalignment='center')
+
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    # ... rest of the visualization code ...
 
 
 def parse_modality_experts(modality_experts_str):
@@ -468,45 +412,93 @@ def main():
     """Main function to run migraine data pipeline."""
     # Parse command line arguments
     args = parse_args()
-    
-    # Create output directory
+
+    # --- Create Output Directory --- 
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Initialize data pipeline
-    print("Initializing migraine data pipeline...")
-    pipeline = MigraineDataPipeline(
-        data_dir=args.data_dir,
-        cache_dir=args.cache_dir,
-        weather_api_key=args.weather_api_key
+    # --- Setup Logging --- 
+    log_file = os.path.join(args.output_dir, 'prediction.log')
+    # Remove existing handlers to avoid duplicate logs if run multiple times
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+        
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file), # Log to file
+            logging.StreamHandler(sys.stdout) # Log to console
+        ]
     )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Logging initialized. Log file: {log_file}")
+    # ------------------------
 
-    # >>> PARSE IMPUTER CONFIG <<<
-    imputer_config_dict = None
-    if args.imputer_config:
-        try:
-            imputer_config_dict = json.loads(args.imputer_config)
-            print(f"Using imputer config: {imputer_config_dict}")
-        except json.JSONDecodeError as e:
-            print(f"Error parsing imputer_config JSON: {e}. Using default imputer settings.")
-            imputer_config_dict = None
-    # >>> END PARSE <<<
+    # --- Define Device Early --- 
+    if torch.cuda.is_available() and not args.cpu:
+        device = 'cuda'
+        print("Using GPU")
+    else:
+        device = 'cpu'
+        print("Using CPU")
+    # ---------------------------
 
-    # Run data pipeline
-    print("Processing migraine data...")
+    # Create MigraineDataPipeline instance
+    pipeline = MigraineDataPipeline(data_dir=args.data_dir, 
+                                    cache_dir=args.cache_dir,
+                                    weather_api_key=args.weather_api_key) # Pass API key if available
+
+    # Process data
+    logger.info("Processing data using the pipeline...")
+    # Revert back to using run_full_pipeline with necessary arguments
     fusemoe_data = pipeline.run_full_pipeline(
         location=(args.latitude, args.longitude),
         start_date=args.start_date,
         end_date=args.end_date,
-        prediction_horizon=24,  # 24-hour prediction window
-        window_size=24,  # 24-hour data window
-        imputation_method=args.imputation_method if args.imputation_method != 'none' else None, # Pass None if 'none' specified
-        imputer_config=imputer_config_dict # Pass parsed dict
+        prediction_horizon=args.prediction_horizon,
+        window_size=args.window_size,
+        imputation_method=args.imputation_method if args.imputation_method != 'none' else None,
+        imputer_config=args.imputer_config
     )
-    
-    if not fusemoe_data['X']:
-        print("Error: No data available for processing. Check data files and paths.")
+
+    # Check if data processing returned valid data
+    if fusemoe_data is None or \
+       not isinstance(fusemoe_data, dict) or \
+       'X' not in fusemoe_data or \
+       'y' not in fusemoe_data or \
+       fusemoe_data['y'] is None or \
+       len(fusemoe_data['X']) == 0 or \
+       len(fusemoe_data['y']) == 0:
+        logger.error("Failed to process data or data is empty/invalid format after pipeline execution.")
+        sys.exit(1)
+
+    logger.info("Data processing complete.")
+    logger.info(f"Number of feature samples (X): {len(fusemoe_data['X'])}")
+    logger.info(f"Number of target samples (y): {len(fusemoe_data['y'])}")
+
+    # Check for sufficient data using len()
+    if len(fusemoe_data['X']) < 2 or len(np.unique(fusemoe_data['y'])) < 2:
+        print("Error: Insufficient data for training.")
         return
-    
+
+    # Get the number of features dynamically
+    # input_features = fusemoe_data['X'].shape[1]
+
+    # TODO: Load or define MoE model configuration properly
+    # Configuration is set later using num_features_total
+    # config = MoEConfig(
+
+    # Data Splitting
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        fusemoe_data['X'], 
+        fusemoe_data['y'], 
+        test_size=0.2, 
+        random_state=42,
+        stratify=fusemoe_data['y'] 
+    )
+    print(f"Train set targets: {np.unique(y_train, return_counts=True)}")
+    print(f"Test set targets: {np.unique(y_temp, return_counts=True)}")
+
     # Print summary of processed data
     print("\nData Processing Summary:")
     print(f"Total samples: {len(fusemoe_data['X'])}")
@@ -539,34 +531,70 @@ def main():
     print(f"\nDataset summary saved to {summary_file}")
     print("Data processing complete.")
     
-    # Split data into train/test sets
-    print("\nSplitting data into train/test sets...")
-    # Use 80% for training, 20% for testing
-    num_samples = len(fusemoe_data['X'])
-    train_size = int(0.8 * num_samples)
-    
-    # Create indices for train/test split
-    indices = np.random.permutation(num_samples)
-    train_indices = indices[:train_size]
-    test_indices = indices[train_size:]
-    
-    # Create train/test datasets
-    train_data = {
-        'X': [fusemoe_data['X'][i] for i in train_indices],
-        'y': [fusemoe_data['y'][i] for i in train_indices],
-        'modalities': fusemoe_data['modalities'],
-        'features_per_modality': fusemoe_data['features_per_modality']
-    }
-    
-    test_data = {
-        'X': [fusemoe_data['X'][i] for i in test_indices],
-        'y': [fusemoe_data['y'][i] for i in test_indices],
-        'modalities': fusemoe_data['modalities'],
-        'features_per_modality': fusemoe_data['features_per_modality']
-    }
-    
-    print(f"Training samples: {len(train_data['X'])}")
-    print(f"Testing samples: {len(test_data['X'])}")
+    # Split data into training and testing sets (stratified if possible)
+    try:
+        train_X, test_X, train_y, test_y = train_test_split(
+            fusemoe_data['X'], 
+            fusemoe_data['y'], 
+            test_size=0.2, 
+            random_state=42,
+            stratify=fusemoe_data['y'] 
+        )
+        print(f"Train set targets: {np.unique(train_y, return_counts=True)}")
+        print(f"Test set targets: {np.unique(test_y, return_counts=True)}")
+    except ValueError as e:
+        print(f"Warning: Stratified split failed: {e}. Performing regular split.")
+        train_X, test_X, train_y, test_y = train_test_split(
+            fusemoe_data['X'], fusemoe_data['y'], test_size=0.2, random_state=42
+        )
+        
+    print(f"Training samples: {len(train_X)}")
+    print(f"Testing samples: {len(test_X)}")
+
+    # --- Prepare data dictionary for PyGMO (and potentially evaluation) --- 
+    # Input to PyGMO should be: dict {modality: tensor[Batch, Window, Features]}
+    train_data_dict = {mod: [] for mod in fusemoe_data['modalities']}
+    for sample_dict in train_X:
+        for mod in fusemoe_data['modalities']:
+            if mod in sample_dict:
+                train_data_dict[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
+            else:
+                # Handle missing modality for a sample (e.g., pad with zeros)
+                num_features = fusemoe_data['features_per_modality'].get(mod, 0)
+                train_data_dict[mod].append(torch.zeros((config.window_size, num_features), dtype=torch.float32))
+                
+    # Stack tensors for each modality to create [Batch, Window, Features]
+    for mod in list(train_data_dict.keys()): # Use list to allow deletion
+        if train_data_dict[mod]:
+            train_data_dict[mod] = torch.stack(train_data_dict[mod]).to(device)
+        else:
+            # Remove modality if no data was collected
+            print(f"Warning: No training data found for modality {mod}. Removing.")
+            del train_data_dict[mod]
+            
+    # Convert train_y to tensor [Batch, 1]
+    y_train_tensor = torch.tensor(train_y, dtype=torch.float32).unsqueeze(1).to(device)
+
+    # --- Prepare test data dictionary similarly --- 
+    test_data_dict = {mod: [] for mod in fusemoe_data['modalities']}
+    for sample_dict in test_X:
+        for mod in fusemoe_data['modalities']:
+            if mod in sample_dict:
+                test_data_dict[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
+            else:
+                num_features = fusemoe_data['features_per_modality'].get(mod, 0)
+                test_data_dict[mod].append(torch.zeros((config.window_size, num_features), dtype=torch.float32))
+                
+    for mod in list(test_data_dict.keys()):
+        if test_data_dict[mod]:
+            test_data_dict[mod] = torch.stack(test_data_dict[mod]).to(device)
+        else:
+            print(f"Warning: No test data found for modality {mod}. Removing.")
+            del test_data_dict[mod]
+            
+    # Convert test_y to tensor [Batch, 1]
+    y_test_tensor = torch.tensor(test_y, dtype=torch.float32).unsqueeze(1).to(device)
+    # --- End Data Preparation --- 
     
     # Define modality experts configuration
     # If provided via command line, use that instead of the auto-configuration
@@ -580,10 +608,6 @@ def main():
     for modality, num_experts in experts_config.items():
         print(f"  - {modality}: {num_experts} experts")
     
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
-    print(f"\nUsing device: {device}")
-
     # Calculate total number of features before creating config
     num_features_total = sum(fusemoe_data['features_per_modality'].values())
 
@@ -596,6 +620,7 @@ def main():
         moe_hidden_size=args.hidden_size, # Use args.hidden_size for MoE hidden layer
         moe_output_size=1, # Binary classification output
         router_type=args.router_type,
+        window_size=args.window_size, # <-- Pass window_size from args
         gating=args.gating_function,
         top_k=args.top_k,
         num_modalities=len(fusemoe_data['modalities']),
@@ -627,43 +652,6 @@ def main():
     if args.use_pygmo:
         print("\nOptimizing model architecture and routing using PyGMO...")
 
-        # --- Prepare input data as dictionary for optimize_model ---
-        num_train_samples = len(train_data['X'])
-        # Initialize lists for each modality based on available modalities in the dataset
-        train_data_dict = {mod: [] for mod in fusemoe_data['modalities']}
-
-        # Iterate through each training sample dictionary in train_data['X']
-        for sample_dict in train_data['X']:
-            for mod in fusemoe_data['modalities']:
-                if mod in sample_dict:
-                    # Append the features tensor for this modality and sample
-                    train_data_dict[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
-                else:
-                    # Handle case where a modality might theoretically be missing for a sample
-                    # Append zeros matching the expected feature size for that modality
-                    num_features = fusemoe_data['features_per_modality'].get(mod, 0)
-                    train_data_dict[mod].append(torch.zeros(num_features, dtype=torch.float32))
-
-        # Stack tensors for each modality to get shape (num_samples, num_features)
-        for mod in list(train_data_dict.keys()): # Iterate over keys copy
-             if train_data_dict[mod]: # Ensure list is not empty
-                try:
-                    train_data_dict[mod] = torch.stack(train_data_dict[mod]).to(device)
-                except RuntimeError as e:
-                    print(f"Error stacking tensors for modality {mod}: {e}")
-                    # Option: remove modality if stacking fails (e.g., inconsistent shapes)
-                    del train_data_dict[mod]
-             else:
-                 # Remove modality if no data was collected (should not happen if fusemoe_data['modalities'] is accurate)
-                 print(f"Warning: No data found for modality {mod} during PyGMO preparation. Removing.")
-                 del train_data_dict[mod]
-
-        # Correctly extract training labels from train_data['y']
-        y_train_list = train_data['y']
-        # Ensure target tensor shape is likely (num_samples, 1) for BCEWithLogitsLoss compatibility
-        y_train_tensor = torch.tensor(y_train_list, dtype=torch.float32).unsqueeze(1).to(device)
-        # --- End dictionary preparation ---
-
         print("Prepared data for PyGMO optimization:")
         for mod, tensor in train_data_dict.items():
             print(f"  - {mod}: {tensor.shape}")
@@ -671,16 +659,66 @@ def main():
 
         print("\nStarting PyGMO-enhanced FuseMOE optimization...")
         try:
-            migraine_fusemoe.optimize_model(
+            # Capture the returned history along with the model
+            optimized_model, optimization_history = migraine_fusemoe.optimize_model(
                 train_data=(train_data_dict, y_train_tensor), # Pass data as a tuple to the 'train_data' argument
-                expert_algo=args.expert_algorithm,
-                gating_algo=args.gating_algorithm,
+                expert_algo=args.expert_algorithm, # Corrected keyword
+                gating_algo=args.gating_algorithm, # Corrected keyword
                 expert_pop_size=args.expert_population_size,
                 gating_pop_size=args.gating_population_size,
                 seed=42, # Use a consistent seed
                 device=device
             )
+            migraine_fusemoe = optimized_model # Update the model variable
             print("PyGMO Model optimization complete!")
+            
+            # Save the optimization history
+            history_file = os.path.join(args.output_dir, 'optimization_history.json')
+            try:
+                # Convert tensors/numpy arrays in history to lists for JSON serialization
+                serializable_history = {}
+                for stage, stage_data in optimization_history.items(): # stage_data is e.g., {'algorithm': 'sade', 'history': [...]} 
+                    if isinstance(stage_data, dict):
+                        algo = stage_data.get('algorithm', 'Unknown')
+                        history_list = stage_data.get('history', []) # Get the list of records
+                        
+                        processed_records = []
+                        if isinstance(history_list, list):
+                            for record in history_list: # Iterate over the actual list
+                                if isinstance(record, dict):
+                                    new_record = {}
+                                    for key, value in record.items():
+                                        if isinstance(value, torch.Tensor):
+                                            new_record[key] = value.item() if value.numel() == 1 else value.tolist()
+                                        elif isinstance(value, np.ndarray):
+                                            new_record[key] = value.item() if value.size == 1 else value.tolist()
+                                        elif isinstance(value, (int, float, str, bool, list, dict)) or value is None:
+                                            new_record[key] = value # Keep JSON serializable types
+                                        else:
+                                            new_record[key] = str(value) # Fallback: convert to string
+                                    processed_records.append(new_record)
+                                else:
+                                    print(f"Warning: Skipping non-dict record in history for stage '{stage}': {record}")
+                        else:
+                            print(f"Warning: 'history' data for stage '{stage}' is not a list: {type(history_list)}")
+
+                        # Store the algorithm and the processed list for this stage
+                        serializable_history[stage] = {
+                            'algorithm': algo,
+                            'history': processed_records
+                        }
+                    else:
+                        # Handle unexpected format for a stage
+                         print(f"Warning: Skipping unexpected data format for stage '{stage}': {type(stage_data)}")
+
+                with open(history_file, 'w') as f:
+                    json.dump(serializable_history, f, indent=4)
+                print(f"Optimization history saved to {history_file}")
+            except Exception as e:
+                print(f"Error saving optimization history: {e}")
+                import traceback
+                traceback.print_exc() # Print detailed traceback
+
         except Exception as e:
             print(f"Error during PyGMO model optimization: {str(e)}")
             import traceback
@@ -691,60 +729,37 @@ def main():
     else:
         # Standard PyTorch training loop
         print("\nStarting Standard PyTorch Training...")
-        num_epochs = 10 # Example: Train for 10 epochs, make this configurable?
-        learning_rate = 0.001 # Example learning rate
+        optimizer = torch.optim.Adam(migraine_fusemoe.parameters(), lr=0.001)
+        criterion = torch.nn.BCEWithLogitsLoss() # Handles sigmoid internally
+        num_epochs = 10 # Example: Train for a few epochs
         batch_size = 16 # Example batch size
-
-        optimizer = optim.Adam(migraine_fusemoe.parameters(), lr=learning_rate)
-        criterion = nn.BCEWithLogitsLoss() # Suitable for binary classification
-
-        # Prepare DataLoader (requires converting list of dicts to tensors)
-        # We need to handle the dictionary structure of X
-        # Option 1: Custom Dataset class (more robust)
-        # Option 2: Simpler approach - iterate through samples directly (easier for now)
         
         migraine_fusemoe.train() # Set model to training mode
         for epoch in range(num_epochs):
-            epoch_loss = 0.0
-            num_batches = 0
-            # Simple iteration without DataLoader for now
-            permutation = torch.randperm(len(train_data['X']))
-            
-            for i in range(0, len(train_data['X']), batch_size):
-                indices = permutation[i:i+batch_size]
-                batch_X_list = [train_data['X'][idx] for idx in indices]
-                batch_y_list = [train_data['y'][idx] for idx in indices]
+            epoch_loss = 0
+            # Simple batching (consider DataLoader for larger datasets)
+            for i in range(0, len(train_data_dict), batch_size):
+                batch_X_list = list(train_data_dict.values())[i:i+batch_size]
+                batch_y = torch.tensor(train_y[i:i+batch_size], dtype=torch.float32).unsqueeze(1).to(device)
                 
                 # Prepare batch input dictionary
-                batch_input = {mod: [] for mod in fusemoe_data['modalities']}
-                for sample_dict in batch_X_list:
-                     for mod in fusemoe_data['modalities']:
-                          batch_input[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
+                batch_input = {mod: batch_X_list[i] for i, mod in enumerate(fusemoe_data['modalities'])}
                 
-                # Stack tensors for each modality
-                for mod in fusemoe_data['modalities']:
-                     batch_input[mod] = torch.stack(batch_input[mod]).to(device)
-                     
-                batch_y = torch.tensor(batch_y_list, dtype=torch.float32).unsqueeze(1).to(device)
-
-                # Zero gradients
                 optimizer.zero_grad()
-
-                # Forward pass
-                # Assuming model.forward takes the dictionary input
-                outputs, _, _ = migraine_fusemoe(batch_input) 
+                
+                # Forward pass - Expects two outputs (predictions, gates), only need predictions for loss
+                model_predictions, _ = migraine_fusemoe(batch_input) 
                 
                 # Calculate loss
-                loss = criterion(outputs, batch_y)
+                loss = criterion(model_predictions, batch_y)
                 
-                # Backward pass and optimize
+                # Backward pass and optimization
                 loss.backward()
                 optimizer.step()
                 
                 epoch_loss += loss.item()
-                num_batches += 1
                 
-            avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
+            avg_epoch_loss = epoch_loss / len(train_data_dict) if len(train_data_dict) > 0 else 0
             print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_epoch_loss:.4f}")
 
         print("Standard Training complete.")
@@ -774,7 +789,7 @@ def main():
     
     # Evaluate the model
     print("\nEvaluating model on test data...")
-    results = evaluate_model(model, test_data)
+    results, probs, y_true = evaluate_model(model, test_data_dict, y_test_tensor, device)
     
     # Print evaluation results
     print("\nEvaluation Results:")
@@ -785,7 +800,7 @@ def main():
     
     # Visualize results
     print("\nGenerating visualizations...")
-    visualize_results(results, model, test_data, args.output_dir)
+    visualize_results(args.output_dir, results, y_true, probs, optimization_history=None, model=model, X_test=test_data_dict)
     
     # Save the final model
     model_path = os.path.join(args.output_dir, "model.pth")
@@ -795,38 +810,44 @@ def main():
     # If using PyGMO, identify and visualize triggers
     if args.use_pygmo:
         print("\nIdentifying potential migraine triggers...")
-        # Choose a sample input for trigger identification
+        # Choose a sample input for trigger identification - Use the test_data_dict
         sample_input = {}
-        for i, x_dict in enumerate(test_data['X']):
-            if test_data['y'][i] == 1:  # Find a positive sample
-                for modality, features in x_dict.items():
-                    sample_input[modality] = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
-                break
-        
-        # If no positive sample found, use the first sample
-        if not sample_input:
-            for modality, features in test_data['X'][0].items():
-                sample_input[modality] = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
-        
-        # Identify triggers
-        trigger_scores = model.identify_triggers(sample_input)
-        
-        # Visualize triggers
-        plt.figure(figsize=(12, 8))
-        for i, (modality, scores) in enumerate(trigger_scores.items()):
-            scores = scores.cpu().numpy().flatten()
-            plt.subplot(len(trigger_scores), 1, i+1)
-            plt.bar(range(len(scores)), scores, alpha=0.7)
-            plt.title(f"Trigger Importance: {modality}")
-            plt.xlabel("Feature Index")
-            plt.ylabel("Importance Score")
-            plt.grid(alpha=0.3)
-        
-        plt.tight_layout()
-        trigger_path = os.path.join(args.output_dir, "trigger_analysis.png")
-        plt.savefig(trigger_path)
-        plt.close()
-        print(f"Trigger analysis saved to {trigger_path}")
+        if len(y_test_tensor) > 0:
+             # Find a positive sample index
+            positive_idx = -1
+            for i in range(len(y_test_tensor)):
+                if y_test_tensor[i].item() == 1:
+                    positive_idx = i
+                    break
+            
+            target_idx = positive_idx if positive_idx != -1 else 0 # Use first sample if no positive found
+            
+            for modality, tensor_batch in test_data_dict.items():
+                sample_input[modality] = tensor_batch[target_idx].unsqueeze(0) # Get sample and add batch dim
+        else:
+            print("Warning: Cannot identify triggers - test data is empty.")
+            
+        # Identify triggers if sample_input is populated
+        if sample_input:
+            trigger_scores = model.identify_triggers(sample_input)
+            # Visualize triggers
+            plt.figure(figsize=(12, 8))
+            for i, (modality, scores) in enumerate(trigger_scores.items()):
+                scores = scores.cpu().numpy().flatten()
+                plt.subplot(len(trigger_scores), 1, i+1)
+                plt.bar(range(len(scores)), scores, alpha=0.7)
+                plt.title(f"Trigger Importance: {modality}")
+                plt.xlabel("Feature Index")
+                plt.ylabel("Importance Score")
+                plt.grid(alpha=0.3)
+            
+            plt.tight_layout()
+            trigger_path = os.path.join(args.output_dir, "trigger_analysis.png")
+            plt.savefig(trigger_path)
+            plt.close()
+            print(f"Trigger analysis saved to {trigger_path}")
+        else:
+             print("Skipping trigger identification.")
     
     print("\nMigraine prediction completed successfully!")
     print(f"Results saved to: {args.output_dir}")

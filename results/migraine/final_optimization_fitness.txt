@@ -1,0 +1,4 @@
+Final Best Fitness Values
+=========================
+  Expert Evolution: -0.214591
+  Gating Pso: 0.681463
