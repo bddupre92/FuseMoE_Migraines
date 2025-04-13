@@ -85,7 +85,7 @@ class MigraineDataPipeline:
             print(f"Warning: No Migraine events files found matching pattern {file_pattern}")
             self.migraine_events = []
             return []
-
+        
         all_events = []
         print(f"Found {len(event_files)} migraine event files to load...")
         for file in event_files:
@@ -94,48 +94,52 @@ class MigraineDataPipeline:
                 events_df = pd.read_csv(file)
                 # Convert DataFrame rows to list of dictionaries
                 events = events_df.to_dict('records')
-
-                # Ensure proper format
+            
+                # Ensure proper format (Now correctly indented within try)
                 for event in events:
-                    # Check for start_time (actual column) and severity
-                    if 'start_time' in event and 'severity' in event:
-                        # Parse the start_time field
-                        if isinstance(event['start_time'], str):
-                            try:
-                                event['start_time'] = pd.Timestamp(event['start_time'])
-                            except Exception as time_e:
-                                print(f"Warning: Could not parse start_time '{event['start_time']}' in {file}: {time_e}. Skipping event.")
-                                continue # Skip this event if timestamp is invalid
-                        # Add other checks/parsing if necessary (e.g., for severity, triggers)
-                        
-                        # Append valid event
-                        all_events.append(event)
-                    else:
-                        # Print warning if essential keys are missing
-                        print(f"Warning: Skipping invalid event entry (missing start_time or severity) in {file}: {event}")
+                        # Check for start_time (actual column) and severity
+                        if 'start_time' in event and 'severity' in event:
+                            # Parse the start_time field
+                            if isinstance(event['start_time'], str):
+                                try:
+                                    event['start_time'] = pd.Timestamp(event['start_time'])
+                                except Exception as time_e:
+                                    print(f"Warning: Could not parse start_time '{event['start_time']}' in {file}: {time_e}. Skipping event.")
+                                    continue # Skip this event if timestamp is invalid
+                            
+                            # Ensure start_time is a valid timestamp after potential parsing
+                            if isinstance(event['start_time'], pd.Timestamp) and pd.notna(event['start_time']):
+                                all_events.append(event) # Append valid event
+                            else:
+                                print(f"Warning: Skipping event with invalid start_time type or NaT after parsing in {file}: {event}")
+                        else:
+                            # Print warning if essential keys are missing
+                            print(f"Warning: Skipping invalid event entry (missing start_time or severity) in {file}: {event}")
             except Exception as e:
                 print(f"Error loading or processing migraine events file {file}: {e}")
 
         # Sort events by start_time just in case
-        # Use a try-except block in case start_time is not always present or valid after parsing
         try:
-            all_events.sort(key=lambda x: x.get('start_time', pd.Timestamp.min))
+            # Filter out events without a valid Timestamp before sorting
+            valid_events_for_sort = [e for e in all_events if isinstance(e.get('start_time'), pd.Timestamp)]
+            valid_events_for_sort.sort(key=lambda x: x['start_time'])
+            all_events = valid_events_for_sort # Replace original list with sorted valid ones
         except TypeError as sort_e:
             print(f"Warning: Could not sort events by start_time due to type error: {sort_e}. Events may be out of order.")
 
-        # --- Deduplicate events based on start_time --- #
+        # --- Deduplicate events based on start_time (Refactored) --- #
         deduplicated_events = []
         seen_start_times = set()
-        for event in all_events:
-            start_time = event.get('start_time')
-            if start_time is not None and pd.notna(start_time):
-                if start_time not in seen_start_times:
-                    deduplicated_events.append(event)
-                    seen_start_times.add(start_time)
-            else:
-                # Keep events with missing/invalid start times? Or discard?
-                # For now, let's keep them if they were added to all_events previously.
+        print("Deduplicating events based on start_time...") 
+        for event in all_events: # Iterate through already validated and sorted events
+            start_time = event.get('start_time') 
+            # We know start_time is a valid Timestamp here due to filtering above
+            if start_time not in seen_start_times:
                 deduplicated_events.append(event)
+                seen_start_times.add(start_time)
+            # else: # Implicitly skip duplicates
+                # print(f"DEBUG: Skipping duplicate event with start_time {start_time}")
+        # No need to handle invalid start_times here anymore
         
         num_removed = len(all_events) - len(deduplicated_events)
         if num_removed > 0:
@@ -157,11 +161,11 @@ class MigraineDataPipeline:
         """
         eeg_dir = os.path.join(self.data_dir, "eeg")
         eeg_csv_path = os.path.join(eeg_dir, "all_eeg_data.csv") # Path to combined CSV
-
+        
         if not os.path.exists(eeg_csv_path):
             print(f"Warning: Combined EEG CSV file not found at {eeg_csv_path}")
             return pd.DataFrame()
-
+        
         # Load the combined CSV
         try:
             eeg_df_raw = pd.read_csv(eeg_csv_path)
@@ -169,22 +173,18 @@ class MigraineDataPipeline:
         except Exception as e:
             print(f"Error loading combined EEG CSV: {e}")
             return pd.DataFrame()
-
-        # --- Process EEG data --- #
-        # NOTE: self.eeg_processor.process_dataset might expect a list of .npy file paths.
-        # It needs to be adapted to handle the pre-loaded DataFrame (eeg_df_raw)
-        # or the path to the CSV file.
-        # For now, let's assume it can handle the DataFrame directly or adjust it later.
+        
+        # Process EEG data (Corrected try/except structure)
         try:
             print("Processing combined EEG DataFrame...")
             eeg_df = self.eeg_processor.process_dataset(eeg_df_raw) # Pass DataFrame
-            self.eeg_data = eeg_df
-            print(f"Processed EEG data: {len(self.eeg_data)} records")
-            return eeg_df
-        except Exception as e:
+            self.eeg_data = eeg_df # Assign inside try
+            print(f"Processed EEG data: {len(self.eeg_data)} records") # Print inside try
+            return eeg_df # Return inside try
+        except Exception as e: # Correctly associated except
              print(f"Error processing EEG data: {e}")
              print("Please check if EEGProcessor.process_dataset can handle a DataFrame.")
-             return pd.DataFrame()
+             return pd.DataFrame() # Return empty df on error
     
     def process_weather_data(self, location: Tuple[float, float],
                            start_date: Union[str, datetime],
@@ -234,7 +234,7 @@ class MigraineDataPipeline:
             # Assuming process_sleep_dataset can handle a DataFrame
             sleep_df = self.sleep_processor.process_sleep_dataset(sleep_df_raw)
             self.sleep_data = sleep_df
-
+            
             return sleep_df
             
         except Exception as e:
@@ -265,7 +265,7 @@ class MigraineDataPipeline:
             # Assuming process_hrv_dataset can handle a DataFrame
             stress_df = self.stress_processor.process_hrv_dataset(stress_df_raw)
             self.stress_data = stress_df
-
+            
             return stress_df
             
         except Exception as e:
@@ -356,20 +356,20 @@ class MigraineDataPipeline:
         self.aligned_data = aligned_dfs
         return aligned_dfs
     
-    def create_multimodal_dataset(self, time_window: str = '1H',
+    def create_multimodal_dataset(self, time_window: str = '1H', 
                                 prediction_horizon: int = 24,
                                 imputation_method: Optional[str] = 'knn',
                                 imputer_config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
         Merge all processed modalities into a single time-aligned DataFrame,
         optionally impute missing values, and prepare for target creation.
-
+        
         Args:
             time_window: Resampling frequency (e.g., '1H', '30T').
             prediction_horizon: How many hours ahead to predict migraine events.
             imputation_method: Method to use for imputation ('knn', 'iterative', or None).
             imputer_config: Dictionary of parameters for the chosen imputer.
-
+            
         Returns:
             A time-indexed DataFrame with all features and a target column.
         """
@@ -436,9 +436,13 @@ class MigraineDataPipeline:
             return pd.DataFrame()
         
         # Use the latest start time and earliest end time for overlap
-        start_time = max(min_times) 
+        start_time = max(min_times)
         end_time = min(max_times)
         
+        # --- Add Logging for Overlap --- 
+        print(f"DEBUG: Calculated overlap range: Start={start_time}, End={end_time}")
+        # --- End Logging ---
+
         if start_time >= end_time:
             print(f"Warning: No time overlap found between data sources. Start: {start_time}, End: {end_time}")
             return pd.DataFrame()
@@ -474,7 +478,7 @@ class MigraineDataPipeline:
                     # Ensure it's a Timestamp object
                     event_ts = pd.Timestamp(event['start_time'])
                     valid_event_times.append(event_ts)
-                else:
+            else:
                     print(f"Warning: Skipping event with missing or invalid start_time: {event}")
             
             if valid_event_times:
@@ -512,7 +516,7 @@ class MigraineDataPipeline:
             
         # Convert boolean target to integer (0 or 1) if preferred
         # multimodal_df['migraine_within_horizon'] = multimodal_df['migraine_within_horizon'].astype(int)
-
+        
         # Forward fill missing values (carry forward last observation)
         print("Forward filling missing values...")
         multimodal_df = multimodal_df.ffill()
@@ -602,12 +606,12 @@ class MigraineDataPipeline:
         else:
             print("No imputation method specified. Skipping imputation.")
         # >>> END IMPUTATION BLOCK <<<
-
+        
         return multimodal_df
     
     def prepare_data_for_fusemoe(self, multimodal_df: pd.DataFrame,
                                window_size: int = 24,
-                               step_size: int = 12) -> Dict[str, Any]:
+                               step_size: int = 1) -> Dict[str, Any]:
         """
         Prepare data for FuseMoE model in the format expected by the model.
         
@@ -788,7 +792,7 @@ class MigraineDataPipeline:
             return pd.DataFrame()
             
             
-    def run_full_pipeline(self,
+    def run_full_pipeline(self, 
                         location: Tuple[float, float],
                         start_date: Union[str, datetime],
                         end_date: Union[str, datetime],
@@ -798,7 +802,7 @@ class MigraineDataPipeline:
                         imputer_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Run the complete data processing pipeline including imputation.
-
+        
         Args:
             location: Location coordinates (latitude, longitude)
             start_date: Start date for data
@@ -807,7 +811,7 @@ class MigraineDataPipeline:
             window_size: Number of hours to use as input window
             imputation_method: Method for imputation ('knn', 'iterative', 'none').
             imputer_config: Configuration dictionary for the imputer.
-
+            
         Returns:
             Dictionary with processed data ready for the FuseMOE model
         """
@@ -827,20 +831,21 @@ class MigraineDataPipeline:
         # Create multimodal dataset
         multimodal_df = self.create_multimodal_dataset(
             time_window='1H', # Example time window, adjust as needed
-            prediction_horizon=prediction_horizon,
+            prediction_horizon=6, # Reduced from 24 to 6
             imputation_method=imputation_method,
             imputer_config=imputer_config
         )
-
+        
         if multimodal_df.empty:
             print("Warning: Multimodal dataset is empty after creation/imputation.")
             return {'X': [], 'y': [], 'modalities': [], 'features_per_modality': {}}
-
+        
         # Prepare data for FuseMOE model
         fusemoe_input_data = self.prepare_data_for_fusemoe(
             multimodal_df=multimodal_df,
-            window_size=window_size,
-            step_size=window_size // 2  # Example overlap
+            window_size=window_size
+            # Removed explicit step_size to use the function default (step_size=1)
+            # step_size=window_size // 2  # Example overlap
         )
-
-        return fusemoe_input_data 
+        
+        return fusemoe_input_data

@@ -274,14 +274,34 @@ class StressProcessor:
             return pd.DataFrame(all_features)
 
         print(f"Processing {len(hrv_data_df)} HRV/stress records from DataFrame...")
-        # Convert DataFrame rows to dictionaries for process_hrv_data
         hrv_records_list = hrv_data_df.to_dict('records')
 
         for record_dict in hrv_records_list:
+            original_timestamp = None # Store the original timestamp
             try:
-                # Ensure timestamp is handled correctly if it's a string
-                if 'timestamp' in record_dict and isinstance(record_dict['timestamp'], str):
-                     record_dict['timestamp'] = pd.Timestamp(record_dict['timestamp'])
+                # --- Check and store timestamp BEFORE processing --- 
+                if 'timestamp' not in record_dict or pd.isna(record_dict['timestamp']):
+                    print(f"Warning: Skipping HRV record due to missing or invalid timestamp. Record: {record_dict}")
+                    continue
+                
+                # Attempt to parse timestamp robustly if it's a string
+                if isinstance(record_dict['timestamp'], str):
+                    try:
+                        original_timestamp = pd.to_datetime(record_dict['timestamp'])
+                    except Exception as ts_err:
+                        print(f"Warning: Could not parse timestamp string '{record_dict['timestamp']}'. Skipping record. Error: {ts_err}")
+                        continue
+                elif isinstance(record_dict['timestamp'], (pd.Timestamp, datetime)):
+                    original_timestamp = pd.Timestamp(record_dict['timestamp']) # Ensure it's a pandas Timestamp
+                else:
+                     print(f"Warning: Skipping HRV record due to unexpected timestamp type: {type(record_dict['timestamp'])}. Record: {record_dict}")
+                     continue
+                
+                # Check if timestamp parsing resulted in NaT
+                if pd.isna(original_timestamp):
+                    print(f"Warning: Timestamp parsed as NaT. Skipping record. Original value: {record_dict['timestamp']}")
+                    continue
+                # ----------------------------------------------------
 
                 # RR intervals might be stored as strings in CSV, need to convert
                 # Assuming they are stored as space-separated numbers or similar
@@ -297,7 +317,13 @@ class StressProcessor:
                 # Add similar parsing for 'scl' if needed
 
                 processed_features = self.process_hrv_data(record_dict)
-                all_features.append(processed_features)
+                
+                # --- Ensure timestamp is in the processed features --- 
+                if processed_features is not None:
+                    processed_features['timestamp'] = original_timestamp # Use the validated timestamp
+                    all_features.append(processed_features)
+                # ----------------------------------------------------
+
             except Exception as e:
                 print(f"Warning: Skipping HRV record due to processing error: {e}. Record: {record_dict}")
                 continue
@@ -310,19 +336,19 @@ class StressProcessor:
 
         # Convert timestamp column to datetime and set as index
         if 'timestamp' in stress_df.columns:
-             # --- Add check to drop rows with NaT timestamps --- 
+             # We should have only valid timestamps now, but keep the check just in case
              initial_len = len(stress_df)
-             stress_df = stress_df.dropna(subset=['timestamp'])
+             # Use errors='coerce' for final safety, though NaNs shouldn't occur now
+             stress_df['timestamp'] = pd.to_datetime(stress_df['timestamp'], errors='coerce') 
+             stress_df = stress_df.dropna(subset=['timestamp']) # Drop if coercion failed
              if len(stress_df) < initial_len:
-                  print(f"Warning: Dropped {initial_len - len(stress_df)} rows from stress data due to missing timestamps (NaT).")
-             # --- End check --- 
+                  dropped_count = initial_len - len(stress_df)
+                  print(f"Warning: Dropped {dropped_count} rows from stress data due to timestamp conversion failure AFTER processing.")
              
-             try:
-                  stress_df['timestamp'] = pd.to_datetime(stress_df['timestamp'])
-                  stress_df = stress_df.set_index('timestamp')
-                  stress_df = stress_df.sort_index() # Ensure index is sorted
-             except Exception as e:
-                  print(f"Warning: Could not set DatetimeIndex for stress data: {e}")
+             # No need for further try-except if dropna handles coercion errors
+             stress_df = stress_df.set_index('timestamp')
+             stress_df = stress_df.sort_index() # Ensure index is sorted
+             
         else:
              print("Warning: 'timestamp' column missing after stress processing.")
 
