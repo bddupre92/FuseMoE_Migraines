@@ -417,12 +417,15 @@ def generate_migraine_events(patient_ids, date_range, output_dir):
                     'triggers': ','.join(triggers)
                 })
         
-        # Create dataframe and save to CSV
+        # Create dataframe and save to CSV only if it's not empty
         df = pd.DataFrame(patient_data)
-        df.to_csv(os.path.join(migraine_dir, f"{patient_id}_migraines.csv"), index=False)
-        all_patient_data.extend(patient_data)
+        if not df.empty:
+            df.to_csv(os.path.join(migraine_dir, f"{patient_id}_migraines.csv"), index=False)
+            all_patient_data.extend(patient_data)
+        # else: # Optional: print a message if a patient has no migraines
+            # print(f"Note: Patient {patient_id} has no generated migraine events.")
     
-    # Create a combined CSV with all patients
+    # Create a combined CSV with all patients (only includes patients with events)
     all_df = pd.DataFrame(all_patient_data)
     all_df.to_csv(os.path.join(migraine_dir, "all_migraine_data.csv"), index=False)
     
