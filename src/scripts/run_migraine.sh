@@ -63,23 +63,34 @@ OUTPUT_DIR="$BASE_DIR/results/migraine"
 mkdir -p "$OUTPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 
-# Define data generation parameters
+# --- Default Parameters for Full Run ---
 NUM_PATIENTS=500
 NUM_DAYS=60
-START_DATE_STR="2023-01-01"
+AVG_MIGRAINE_FREQ=0.2
+CV_FOLDS=5
+EXPERT_POP_SIZE=20
+GATING_POP_SIZE=20
+EXPERT_GENS=20
+GATING_GENS=20
+DEV_MODE_FLAG="" # Empty by default
 
 # Set default cross-validation parameters
-CV_FOLDS=5
-CV_STRATEGY="stratified"
+CV_STRATEGY="stratified" # Default, can be overridden
 CV_SHUFFLE="--cv_shuffle"  # Enable shuffling by default
 
 # Set default data balancing parameters
 BALANCE_METHOD="smote"
 SAMPLING_RATIO="0.8"  # Increased from 0.5 for better balance
 
-# Process command-line arguments for cross-validation and data balancing
+# --- Parse Command-Line Arguments ---
+DEV_MODE_ENABLED=false
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --dev)
+      DEV_MODE_ENABLED=true
+      echo ">>> DEVELOPMENT MODE ENABLED <<<"
+      shift # past argument
+      ;;
     --cv)
       CV_FOLDS="$2"
       shift 2
@@ -112,20 +123,40 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# --- Apply Dev Mode Overrides if Enabled ---
+if [ "$DEV_MODE_ENABLED" = true ]; then
+  echo "Applying development mode parameter overrides..."
+  NUM_PATIENTS=25    # Reduced patients
+  NUM_DAYS=10        # Reduced days
+  AVG_MIGRAINE_FREQ=0.15 # Slightly different balance for dev
+  CV_FOLDS=3         # Fewer folds
+  EXPERT_POP_SIZE=10 # Smaller PyGMO pop
+  GATING_POP_SIZE=10
+  EXPERT_GENS=5      # Fewer PyGMO gens
+  GATING_GENS=5
+  DEV_MODE_FLAG="--dev_mode" # Flag for Python script
+fi
+
+# --- Derived Parameters ---
+START_DATE_STR="2023-01-01"
 # Calculate end date based on start date and number of days
 END_DATE_STR=$(date -v+${NUM_DAYS}d -v-1d -j -f %Y-%m-%d "$START_DATE_STR" +%Y-%m-%d)
 
-# Step 1: Generate synthetic migraine dataset with improved class balance
+# === Step 1: Generate synthetic migraine dataset ===
 echo "Generating synthetic dataset for Migraine Prediction..."
+echo "  Patients: $NUM_PATIENTS, Days: $NUM_DAYS, Avg Freq: $AVG_MIGRAINE_FREQ"
 python "$SCRIPT_DIR/create_migraine_dataset.py" \
     --output_dir "$DATA_DIR" \
     --num_patients $NUM_PATIENTS \
     --days $NUM_DAYS \
-    --avg_migraine_freq 0.2  # Lower frequency for better initial balance
+    --avg_migraine_freq $AVG_MIGRAINE_FREQ
 echo "Migraine dataset generation complete."
 
-# Step 2: Run the migraine prediction pipeline with cross-validation
-echo "Running migraine prediction with FuseMOE and ${CV_FOLDS}-fold cross-validation (${CV_STRATEGY})..."
+# === Step 2: Run the migraine prediction pipeline ===
+echo "Running migraine prediction with FuseMOE..."
+echo "  CV Folds: $CV_FOLDS, Strategy: $CV_STRATEGY"
+echo "  PyGMO Expert Gens: $EXPERT_GENS, Gating Gens: $GATING_GENS"
+echo "  Dev Mode Flag for Python: $DEV_MODE_FLAG"
 python "$SCRIPT_DIR/run_migraine_prediction.py" \
     --data_dir "$DATA_DIR" \
     --cache_dir "$BASE_DIR/cache/migraine" \
@@ -134,10 +165,10 @@ python "$SCRIPT_DIR/run_migraine_prediction.py" \
     --end_date "$END_DATE_STR" \
     --expert_algorithm "de" \
     --gating_algorithm "pso" \
-    --expert_population_size 20 \
-    --gating_population_size 20 \
-    --expert_generations 20 \
-    --gating_generations 20 \
+    --expert_population_size $EXPERT_POP_SIZE \
+    --gating_population_size $GATING_POP_SIZE \
+    --expert_generations $EXPERT_GENS \
+    --gating_generations $GATING_GENS \
     --num_experts 8 \
     --modality_experts "eeg:3,weather:2,sleep:2,stress:1" \
     --hidden_size 128 \
@@ -147,20 +178,22 @@ python "$SCRIPT_DIR/run_migraine_prediction.py" \
     --router_type "joint" \
     --imputation_method "knn" \
     --cv $CV_FOLDS \
-    --cv_strategy "stratified" \
+    --cv_strategy "$CV_STRATEGY" \
     $CV_SHUFFLE \
-    --balance_method "smote" \
-    --sampling_ratio "0.8" \
+    --balance_method "$BALANCE_METHOD" \
+    --sampling_ratio "$SAMPLING_RATIO" \
     --class_weight "balanced" \
     --threshold_search \
     --optimize_metric "balanced_accuracy" \
     --use_pygmo \
     --batch_size 32 \
+    $DEV_MODE_FLAG \
     $CPU_FLAG
 
 echo "Migraine prediction with cross-validation completed. Results saved to $OUTPUT_DIR"
 
-# Optional: Run advanced patient-specific adaptation
+# === Optional: Run advanced patient-specific adaptation ===
+# Note: Dev mode logic is NOT added here, as adaptation is usually specific
 if [ "$PATIENT_ADAPTATION" = true ]; then
     if [ -z "$PATIENT_ID" ]; then
         echo "Error: Patient ID required for patient-specific adaptation."

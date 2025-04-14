@@ -572,23 +572,48 @@ def evaluate_model(model, X_test, y_test, device, threshold=0.5, optimize_thresh
     model.eval()
     model.to(device)
     
-    # Move test data to the correct device
-    X_test_dev = {mod: tensor.to(device) for mod, tensor in X_test.items()}
-    y_test_dev = y_test.to(device)
+    # --- Convert input data to tensors and move to device --- #
+    X_test_dev = {}
+    for mod, data_array in X_test.items():
+        if isinstance(data_array, np.ndarray):
+            X_test_dev[mod] = torch.tensor(data_array, dtype=torch.float32).to(device)
+        elif isinstance(data_array, torch.Tensor):
+            X_test_dev[mod] = data_array.to(device)
+        else:
+            # Handle other potential types or raise error
+            logging.warning(f"Unexpected data type for modality '{mod}': {type(data_array)}. Attempting conversion.")
+            try:
+                X_test_dev[mod] = torch.tensor(data_array, dtype=torch.float32).to(device)
+            except Exception as e:
+                logging.error(f"Could not convert modality '{mod}' data to tensor: {e}")
+                # Decide how to handle this error, e.g., skip evaluation or raise
+                raise TypeError(f"Invalid data type for modality '{mod}': {type(data_array)}")
+                
+    # Ensure y_test is a tensor and on the correct device
+    if isinstance(y_test, np.ndarray):
+        y_test_dev = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1).to(device)
+    elif isinstance(y_test, torch.Tensor):
+        y_test_dev = y_test.to(device) # Assume it might need moving
+        if y_test_dev.dim() == 1: # Ensure it has batch and feature dim
+            y_test_dev = y_test_dev.unsqueeze(1)
+    else:
+        logging.error(f"Invalid type for y_test: {type(y_test)}")
+        raise TypeError(f"Invalid type for y_test: {type(y_test)}")
+    # --- End Data Conversion --- #
 
     with torch.no_grad():
         outputs, gates = model(X_test_dev)
         raw_outputs = outputs.cpu().numpy()  # Store raw outputs before sigmoid
         probs = torch.sigmoid(outputs).cpu().numpy() # Probabilities needed for AUC
-        y_true = y_test_dev.cpu().numpy().astype(int)
+        y_true = y_test_dev.cpu().numpy().astype(int).flatten() # Flatten y_true here
         
         # Find optimal threshold if requested
         if optimize_threshold and len(np.unique(y_true)) > 1:
             logging.debug(f"Finding optimal threshold by optimizing {optimize_metric}...")
-            threshold = find_optimal_threshold(y_true.flatten(), probs.flatten(), optimize_metric)
+            threshold = find_optimal_threshold(y_true, probs.flatten(), optimize_metric) # Pass flattened arrays
             logging.debug(f"Optimal threshold found: {threshold:.4f}")
         
-        predicted = (probs > threshold).astype(int)
+        predicted = (probs > threshold).astype(int).flatten() # Flatten predictions
         
         # Log probabilities distribution statistics for debugging
         if len(probs) > 0:
@@ -1572,6 +1597,20 @@ def main():
     logging.info(f"\nDataset summary saved to {summary_file}")
     logging.info("Data processing complete.")
     
+    # --- DEBUG: Check patient IDs before CV --- #
+    groups_np = fusemoe_data.get('groups')
+    if groups_np is not None and len(groups_np) > 0:
+        unique_groups, group_counts = np.unique(groups_np, return_counts=True)
+        logging.info(f"[DEBUG] Found {len(unique_groups)} unique patient IDs in prepared 'groups' array before CV.")
+        # Log first 10 group counts for brevity, or all if fewer than 10
+        group_counts_dict = dict(zip(unique_groups, group_counts))
+        logging.debug(f"[DEBUG] Patient ID counts (prepared data): {dict(list(group_counts_dict.items())[:10])}{'...' if len(group_counts_dict) > 10 else ''}")
+    elif groups_np is not None:
+        logging.warning("[DEBUG] 'groups' array exists but is empty.")
+    else:
+        logging.warning("[DEBUG] 'groups' array not found in prepared data.")
+    # --- END DEBUG --- #
+    
     # Calculate total number of features before creating config
     num_features_total = sum(fusemoe_data['features_per_modality'].values())
 
@@ -1956,54 +1995,41 @@ def main():
             validation_split_size = args.validation_split # Use arg
             
             # Create a validation set for early stopping
-            val_size = int(validation_split_size * len(train_X))
-            if val_size > 1 and len(train_X) - val_size > 1: # Ensure train/val sets are non-empty
+            # Calculate validation size based on the length of the actual training data for the fold
+            val_size = int(validation_split_size * len(y_train_fold)) # Use length of labels (consistent with features)
+            
+            if val_size > 1 and len(y_train_fold) - val_size > 1: # Ensure train/val sets are non-empty
                 # Create a stratified validation split from training data
-                train_val_indices = np.arange(len(train_y))
+                train_val_indices = np.arange(len(y_train_fold))
                 train_indices_subset, val_indices_subset = train_test_split(
                     train_val_indices, test_size=val_size, 
-                    stratify=train_y if len(np.unique(train_y)) > 1 else None,
+                    stratify=y_train_fold if len(np.unique(y_train_fold)) > 1 else None,
                     random_state=args.seed # <<< Use seed
                 )
                 
-                # Create validation dict
-                val_X = [train_X[i] for i in val_indices_subset]
-                val_y = [train_y[i] for i in val_indices_subset]
-                train_X_subset = [train_X[i] for i in train_indices_subset]
-                train_y_subset = [train_y[i] for i in train_indices_subset]
+                # Create validation dict by slicing X_train_fold dictionary
+                val_X_dict = {mod: data[val_indices_subset] for mod, data in X_train_fold.items()}
+                val_y = y_train_fold[val_indices_subset]
+                
+                # Create training subset dict similarly
+                train_X_subset_dict = {mod: data[train_indices_subset] for mod, data in X_train_fold.items()}
+                train_y_subset = y_train_fold[train_indices_subset]
                 
                 # Prepare validation tensors
-                val_data_dict = {mod: [] for mod in fusemoe_data['modalities']}
-                for sample_dict in val_X:
-                    for mod in fusemoe_data['modalities']:
-                        if mod in sample_dict:
-                            val_data_dict[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
-                        else:
-                            # Handle missing modality with zeros
-                            val_data_dict[mod].append(torch.zeros((fusemoe_data['features_per_modality'][mod],), dtype=torch.float32))
-                
-                # Convert lists to tensors
-                val_data_dict = {mod: torch.stack(tensors).to(device) for mod, tensors in val_data_dict.items()}
+                val_data_dict = {mod: torch.tensor(data_array, dtype=torch.float32).to(device) 
+                                 for mod, data_array in val_X_dict.items()}
                 val_y_tensor = torch.tensor(val_y, dtype=torch.float32).unsqueeze(1).to(device)
                 
-                # Recreate train data dict with subset
-                train_subset_dict = {mod: [] for mod in fusemoe_data['modalities']}
-                for sample_dict in train_X_subset:
-                    for mod in fusemoe_data['modalities']:
-                        if mod in sample_dict:
-                            train_subset_dict[mod].append(torch.tensor(sample_dict[mod], dtype=torch.float32))
-                        else:
-                            train_subset_dict[mod].append(torch.zeros((fusemoe_data['features_per_modality'][mod],), dtype=torch.float32))
-                
-                # Convert lists to tensors
-                train_subset_dict = {mod: torch.stack(tensors).to(device) for mod, tensors in train_subset_dict.items()}
+                # Recreate train data dict with subset tensors
+                train_subset_dict_tensors = {mod: torch.tensor(data_array, dtype=torch.float32).to(device) 
+                                           for mod, data_array in train_X_subset_dict.items()}
                 train_y_subset_tensor = torch.tensor(train_y_subset, dtype=torch.float32).unsqueeze(1).to(device)
                 
                 # Use early stopping
                 logging.info(f"  Training with early stopping (patience={patience}, max epochs={num_epochs}) using subset data")
                 migraine_fusemoe, training_history = train_with_early_stopping(
                     model=migraine_fusemoe,
-                    train_data_dict=train_subset_dict,
+                    train_data_dict=train_subset_dict_tensors, # Pass tensor dictionary
                     y_train_tensor=train_y_subset_tensor,
                     val_data_dict=val_data_dict,
                     y_val_tensor=val_y_tensor,
@@ -2016,13 +2042,16 @@ def main():
                 )
                 logging.info(f"Fold {fold_idx+1} - Training complete with early stopping.")
             else:
-                # If dataset is too small for validation split, use standard training
-                logging.info(f"Fold {fold_idx+1} - Training for {num_epochs} epochs with batch size {batch_size} (no validation split)")
+                # If dataset is too small for validation split, use standard training on full fold data
+                logging.warning(f"Fold {fold_idx+1}: Dataset too small for validation split ({len(y_train_fold)} samples). Training on full fold data for {num_epochs} epochs.")
                 
                 optimizer = torch.optim.Adam(migraine_fusemoe.parameters(), lr=args.learning_rate)
                 migraine_fusemoe.train() # Set model to training mode
+                # Use train_data_dict and y_train_tensor (already created tensors for PyGMO fallback)
                 for epoch in range(num_epochs):
                     epoch_loss = 0
+                    # Simple loop without dataloader needed here as data is already tensors
+                    # Note: This uses the full fold data, not a subset
                     for i in range(0, y_train_tensor.shape[0], batch_size):
                         batch_X = {mod: tensor[i:i+batch_size] for mod, tensor in train_data_dict.items()}
                         batch_y = y_train_tensor[i:i+batch_size]

@@ -357,20 +357,20 @@ class MigraineDataPipeline:
         self.aligned_data = aligned_dfs
         return aligned_dfs
     
-    def create_multimodal_dataset(self, time_window: str = '1H',
+    def create_multimodal_dataset(self, time_window: str = '1H', 
                                 prediction_horizon: int = 6,
                                 imputation_method: Optional[str] = 'knn',
                                 imputer_config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
         Merge all processed modalities into a single time-aligned DataFrame,
         optionally impute missing values, and prepare for target creation.
-
+        
         Args:
             time_window: Resampling frequency (e.g., '1H', '30T').
             prediction_horizon: How many hours ahead to predict migraine events.
             imputation_method: Method to use for imputation ('knn', 'iterative', 'autoencoder', 'none').
             imputer_config: Dictionary of parameters for the chosen imputer.
-
+            
         Returns:
             A time-indexed DataFrame with all features, patient_id, and a target column.
         """
@@ -408,7 +408,7 @@ class MigraineDataPipeline:
         if start_time >= end_time:
             logging.warning(f"No time overlap found between data sources. Start: {start_time}, End: {end_time}")
             return pd.DataFrame()
-
+            
         # --- Load Patient ID Mapping ---
         patient_id_map = None
         try:
@@ -418,28 +418,28 @@ class MigraineDataPipeline:
                 if eeg_raw_df['timestamp'].dt.tz is not None:
                      eeg_raw_df['timestamp'] = eeg_raw_df['timestamp'].dt.tz_localize(None) # Ensure TZ naive
                 
-                # Important: Drop duplicates to prevent errors in reindexing
-                logging.info("Deduplicating patient ID mapping from raw EEG data...")
-                original_rows = len(eeg_raw_df)
-                eeg_raw_df = eeg_raw_df.drop_duplicates(subset=['timestamp'], keep='first')
-                deduped_rows = len(eeg_raw_df)
-                if original_rows > deduped_rows:
-                    logging.info(f"Removed {original_rows - deduped_rows} duplicate timestamps from patient ID mapping.")
+                # Log patient distribution from raw file before any modification
+                patient_counts_raw = eeg_raw_df['patient_id'].value_counts()
+                logging.info(f"Found {len(patient_counts_raw)} unique patients in the raw EEG data file.")
+                logging.debug(f"Patient ID counts (raw): {dict(list(patient_counts_raw.items())[:10])}{'...' if len(patient_counts_raw) > 10 else ''}")
+
+                # --- Create a map with UNIQUE timestamp index --- # 
+                # Group by timestamp and take the first patient_id for each unique timestamp
+                logging.info("Creating unique patient ID map by taking the first patient per timestamp...")
+                patient_id_map = eeg_raw_df.groupby('timestamp')['patient_id'].first()
+                # --- ----------------------------------------- --- #
                 
-                # Create the mapping
-                patient_id_map = eeg_raw_df.set_index('timestamp')['patient_id']
                 # Ensure the map index is sorted for reliable reindexing
                 patient_id_map = patient_id_map.sort_index()
-                logging.info("Successfully loaded and deduplicated patient ID mapping from EEG data.")
                 
-                # Log patient distribution
-                patient_counts = eeg_raw_df['patient_id'].value_counts()
-                logging.info(f"Found {len(patient_counts)} unique patients in the EEG data.")
-                logging.debug(f"Patient ID counts: {patient_counts.to_dict()}")
+                logging.info("Successfully loaded unique patient ID mapping from EEG data.")
+                
             else:
                  logging.warning("Could not load patient ID map: Raw EEG CSV not found.")
         except Exception as e:
             logging.warning(f"Error loading patient ID map from EEG data: {e}")
+            import traceback
+            traceback.print_exc()
         # -----------------------------
 
         # --- Create Base DataFrame and Merge ---
@@ -466,16 +466,55 @@ class MigraineDataPipeline:
 
         # --- Join and Fill Patient ID using Reindex ---
         if patient_id_map is not None:
-            patient_ids_reindexed = patient_id_map.reindex(multimodal_df.index, method='ffill')
+            # Reindex WITHOUT forward fill first to preserve alignment
+            patient_ids_reindexed = patient_id_map.reindex(multimodal_df.index) 
             multimodal_df['patient_id'] = patient_ids_reindexed
+            
+            # --- Custom Forward Fill Logic --- #
+            logging.info("Applying custom forward fill for patient IDs...")
+            # Identify rows with NaN patient IDs that need filling
+            nan_indices = multimodal_df.index[multimodal_df['patient_id'].isnull()]
+            if not nan_indices.empty:
+                logging.debug(f"Found {len(nan_indices)} timestamps with NaN patient IDs initially.")
+                # Create a temporary series with original IDs (non-NaN)
+                original_id_series = multimodal_df['patient_id'].dropna()
+                
+                if not original_id_series.empty:
+                    # Find the index of the last known ID for each NaN timestamp
+                    # Use searchsorted on the index of known IDs
+                    last_known_id_indices = original_id_series.index.searchsorted(nan_indices, side='right') - 1
+                    
+                    # Map these indices back to the actual timestamps with known IDs
+                    valid_indices_mask = last_known_id_indices >= 0
+                    fill_values_indices = original_id_series.index[last_known_id_indices[valid_indices_mask]]
+                    
+                    # Get the patient IDs corresponding to these timestamps
+                    fill_values = original_id_series.loc[fill_values_indices]
+                    
+                    # Assign the found IDs to the NaN rows
+                    # Ensure index alignment for assignment
+                    fill_series = pd.Series(fill_values.values, index=nan_indices[valid_indices_mask])
+                    multimodal_df['patient_id'].fillna(fill_series, inplace=True)
+                    logging.info(f"Filled {len(fill_series)} NaN patient IDs using custom forward fill.")
+                else:
+                    logging.warning("No non-NaN patient IDs found to perform forward fill.")
+            # --- End Custom Forward Fill --- #
+            
+            # Check for remaining NaNs and backfill if necessary
             if multimodal_df['patient_id'].isnull().any():
                 missing_count = multimodal_df['patient_id'].isnull().sum()
-                logging.warning(f"Patient ID is missing for {missing_count} records after reindex/ffill. Applying backfill.")
+                logging.warning(f"Patient ID is still missing for {missing_count} records after custom ffill. Applying standard backfill.")
                 multimodal_df['patient_id'] = multimodal_df['patient_id'].bfill()
                 if multimodal_df['patient_id'].isnull().any():
-                    logging.error("Patient ID still missing after ffill and bfill. Cannot proceed reliably with patient-aware CV.")
+                    logging.error("Patient ID still missing after custom ffill and bfill. Cannot proceed reliably with patient-aware CV.")
                     multimodal_df['patient_id'].fillna('UNKNOWN_PATIENT', inplace=True) # Fill remaining with placeholder
+            
             logging.info("Successfully joined and filled patient IDs to multimodal dataframe.")
+            # Log final patient distribution in the multimodal dataframe
+            final_patient_counts = multimodal_df['patient_id'].value_counts()
+            logging.info(f"Found {len(final_patient_counts)} unique patients in the final multimodal dataframe.")
+            logging.debug(f"Patient ID counts (final): {dict(list(final_patient_counts.items())[:20])}{'...' if len(final_patient_counts) > 20 else ''}")
+
         else:
              logging.warning("Could not join patient IDs as the mapping was not loaded.")
         # --- ------------------------------------- ---
@@ -559,7 +598,7 @@ class MigraineDataPipeline:
                     if event_ts.tz is not None: # Ensure timezone naive like index
                          event_ts = event_ts.tz_localize(None)
                     valid_event_times.append(event_ts)
-
+            
             if valid_event_times:
                 valid_event_times.sort()
                 horizon_delta = pd.Timedelta(hours=prediction_horizon)
@@ -706,7 +745,7 @@ class MigraineDataPipeline:
                 except IndexError:
                      logging.error(f"IndexError accessing patient_id at index {window_start_idx}. This should not happen.")
                      group_ids.append(None) # Indicate failure
-                except Exception as e:
+                except Exception as e: # Corrected indentation
                      logging.error(f"Error extracting patient_id for window at index {i}: {e}")
                      group_ids.append(None)
 

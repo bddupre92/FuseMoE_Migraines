@@ -3,6 +3,7 @@
     "graphql": "^16.10.0"
   },
   "devDependencies": {
-    "@graphql-codegen/cli": "^5.0.5"
+    "@graphql-codegen/cli": "^5.0.5",
+    "dependency-cruiser": "^16.10.1"
   }
 }

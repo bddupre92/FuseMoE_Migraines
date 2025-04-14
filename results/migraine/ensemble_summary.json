@@ -1,0 +1,16 @@
+{
+    "accuracy": 0.34363767074047447,
+    "balanced_accuracy": 0.5012695582171424,
+    "precision": 0.3298429319371728,
+    "recall": 0.962882096069869,
+    "f1": 0.4913649025069638,
+    "mcc": 0.006177227465597877,
+    "auc": 0.49876671487477603,
+    "average_precision": 0.3288187524596013,
+    "true_negatives": 37,
+    "false_positives": 896,
+    "false_negatives": 17,
+    "true_positives": 441,
+    "specificity": 0.03965702036441586,
+    "optimal_threshold": 0.12
+}
