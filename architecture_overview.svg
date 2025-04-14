@@ -1,6 +1,6 @@
-<svg viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1000 850" xmlns="http://www.w3.org/2000/svg">
   <!-- Background -->
-  <rect width="1000" height="800" fill="#fdfdfd" rx="10" ry="10"/>
+  <rect width="1000" height="850" fill="#fdfdfd" rx="10" ry="10"/>
   
   <!-- Title -->
   <text x="500" y="35" font-family="Arial" font-size="24" text-anchor="middle" font-weight="bold" fill="#333">PyGMO-Enhanced FuseMoE Migraine Prediction - Process Flow</text>
@@ -36,6 +36,10 @@
     .eval-box {
         fill: #fce4ec;
         stroke: #f06292;
+    }
+    .train-box {
+        fill: #fff9c4;
+        stroke: #ffeb3b;
     }
     .box-text {
       font-family: Arial;
@@ -82,32 +86,32 @@
   <!-- Imputation -->
   <rect x="730" y="190" width="220" height="60" class="process-box"/>
   <text x="840" y="210" class="box-text" font-weight="bold">Handle Missing Data</text>
-  <text x="840" y="228" class="box-text">1. Imputation (e.g., KNN - skipped)</text>
-  <text x="840" y="243" class="box-text">2. Forward Fill / Zero Fill</text>
-  <text x="840" y="261" class="box-text script-text">MigraineDataPipeline</text>
+  <text x="840" y="228" class="box-text">1. Imputation (e.g., KNN)</text>
+  <text x="840" y="243" class="box-text">2. Baseline Fill (if needed)</text>
+  <text x="840" y="261" class="box-text script-text">MigraineDataPipeline / advanced_imputation.py</text>
   
   <!-- Windowing / Target Creation -->
   <rect x="350" y="280" width="300" height="50" class="process-box"/>
   <text x="500" y="300" class="box-text" font-weight="bold">Feature/Target Engineering</text>
   <text x="500" y="318" class="box-text">Create Windows, Target Variable</text>
-  <text x="500" y="336" class="box-text script-text">MigraineDataPipeline._create_windows</text>
+  <text x="500" y="336" class="box-text script-text">MigraineDataPipeline.prepare_data_for_fusemoe</text>
   
   <!-- Data Splitting -->
   <rect x="350" y="355" width="300" height="50" class="process-box data-box"/>
-  <text x="500" y="375" class="box-text" font-weight="bold">Split Data (80/20)</text>
-  <text x="500" y="393" class="box-text">Train / Test Sets</text>
-  <text x="500" y="411" class="box-text script-text">run_migraine_prediction.py#main</text>
+  <text x="500" y="375" class="box-text" font-weight="bold">Split Data (e.g., 5-Fold CV)</text>
+  <text x="500" y="393" class="box-text">Train / Validation / Test Sets</text>
+  <text x="500" y="411" class="box-text script-text">run_migraine_prediction.py#main (CV loop)</text>
   
   <!-- Model Creation -->
   <rect x="350" y="430" width="300" height="50" class="process-box"/>
-  <text x="500" y="450" class="box-text" font-weight="bold">Create Model</text>
+  <text x="500" y="450" class="box-text" font-weight="bold">Create Model (Per Fold)</text>
   <text x="500" y="468" class="box-text">Initialize Encoders, Gating</text>
   <text x="500" y="486" class="box-text script-text">MigraineFuseMoE.__init__</text>
   
   <!-- PyGMO Optimization - Split into Sub-blocks -->
   <!-- Sub-block 1: Expert Optimization -->
   <rect x="150" y="505" width="340" height="100" class="process-box opt-box"/>
-  <text x="320" y="525" class="box-text" font-weight="bold">Expert Optimization</text>
+  <text x="320" y="525" class="box-text" font-weight="bold">Expert Optimization (PyGMO)</text>
   <text x="320" y="545" class="box-text">1. Encode Data (encode_modalities)</text>
   <text x="320" y="563" class="box-text">2. Optimize Experts (DE/SADE/PSO)</text>
   <text x="320" y="581" class="box-text script-text">ExpertEvolutionProblem</text>
@@ -115,7 +119,7 @@
 
   <!-- Sub-block 2: Gating Optimization -->
   <rect x="510" y="505" width="340" height="100" class="process-box opt-box"/>
-  <text x="680" y="525" class="box-text" font-weight="bold">Gating Optimization</text>
+  <text x="680" y="525" class="box-text" font-weight="bold">Gating Optimization (PyGMO)</text>
   <text x="680" y="545" class="box-text">1. Encode Data (if needed)</text>
   <text x="680" y="563" class="box-text">2. Optimize Gating (PSO/ABC/SADE)</text>
   <text x="680" y="581" class="box-text script-text">PSOGatingProblem</text>
@@ -124,45 +128,80 @@
   <!-- Arrow between sub-blocks -->
   <line x1="490" y1="555" x2="510" y2="555" class="flow-arrow"/>
 
-  <!-- Arrow from Gating Opt to next steps -->
-  <line x1="680" y1="605" x2="680" y2="620" class="flow-arrow"/> <!-- Gating Opt to Eval -->
-  <line x1="320" y1="605" x2="320" y2="620" class="flow-arrow" stroke-dasharray="4,4"/> <!-- Expert Opt to Adapt -->
-  <line x1="320" y1="620" x2="150" y2="645" class="flow-arrow" stroke-dasharray="4,4"/> <!-- Arrow tail for Adapt -->
-  <line x1="680" y1="620" x2="450" y2="645" class="flow-arrow"/> <!-- Arrow tail for Eval -->
+  <!-- NEW: Train Model Block -->
+  <rect x="350" y="620" width="300" height="50" class="process-box train-box"/>
+  <text x="500" y="640" class="box-text" font-weight="bold">Train Model (Fine-tuning Weights)</text>
+  <text x="500" y="658" class="box-text">Epochs, Batches, Backprop</text>
+  <text x="500" y="676" class="box-text script-text">run_migraine_prediction.py#train_with_early_stopping</text>
 
   <!-- Patient Adaptation (Optional) -->
-  <rect x="50" y="620" width="200" height="50" class="process-box" stroke-dasharray="4,4"/>
-  <text x="150" y="640" class="box-text" font-weight="bold">Patient Adaptation (Optional)</text>
-  <text x="150" y="658" class="box-text script-text">adapt_to_patient (skipped)</text>
+  <rect x="50" y="695" width="200" height="50" class="process-box" stroke-dasharray="4,4"/>
+  <text x="150" y="715" class="box-text" font-weight="bold">Patient Adaptation (Optional)</text>
+  <text x="150" y="733" class="box-text script-text">adapt_to_patient (skipped)</text>
   
   <!-- Evaluation -->
-  <rect x="300" y="620" width="200" height="50" class="process-box eval-box"/>
-  <text x="400" y="640" class="box-text" font-weight="bold">Evaluate Model</text>
-  <text x="400" y="658" class="box-text script-text">evaluate_model</text>
+  <rect x="300" y="695" width="200" height="50" class="process-box eval-box"/>
+  <text x="400" y="715" class="box-text" font-weight="bold">Evaluate Model</text>
+  <text x="400" y="733" class="box-text script-text">evaluate_model</text>
 
   <!-- Visualization & Saving -->
-  <rect x="550" y="620" width="200" height="50" class="process-box"/>
-  <text x="650" y="640" class="box-text" font-weight="bold">Visualize & Save</text>
-  <text x="650" y="658" class="box-text script-text">visualize_results, torch.save</text>
+  <rect x="550" y="695" width="200" height="50" class="process-box"/>
+  <text x="650" y="715" class="box-text" font-weight="bold">Visualize & Save</text>
+  <text x="650" y="733" class="box-text script-text">visualize_results, torch.save</text>
 
   <!-- Trigger ID -->
-   <rect x="800" y="620" width="150" height="50" class="process-box"/>
-  <text x="875" y="640" class="box-text" font-weight="bold">Identify Triggers</text>
-  <text x="875" y="658" class="box-text script-text">identify_triggers</text>
+   <rect x="800" y="695" width="150" height="50" class="process-box"/>
+  <text x="875" y="715" class="box-text" font-weight="bold">Identify Triggers</text>
+  <text x="875" y="733" class="box-text script-text">identify_triggers</text>
   
   <!-- End Point -->
-  <rect x="450" y="695" width="100" height="40" rx="20" ry="20" fill="#ffccbc" stroke="#ff8a65" stroke-width="2" />
-  <text x="500" y="720" class="box-text" font-weight="bold">End</text>
+  <rect x="450" y="770" width="100" height="40" rx="20" ry="20" fill="#ffccbc" stroke="#ff8a65" stroke-width="2" />
+  <text x="500" y="795" class="box-text" font-weight="bold">End</text>
 
-  <!-- Arrows (Adjusted) -->
-  <line x1="150" y1="670" x2="150" y2="705" class="flow-arrow" stroke-dasharray="4,4"/>
-  <line x1="150" y1="705" x2="450" y2="710" class="flow-arrow" stroke-dasharray="4,4"/> <!-- Adapt to End (dashed) -->
+  <!-- Arrows -->
+  <!-- Start to Script -->
+  <line x1="500" y1="100" x2="500" y2="120" class="flow-arrow"/>
+  <!-- Script to Data Gen -->
+  <line x1="400" y1="145" x2="270" y2="190" class="flow-arrow" stroke-dasharray="4,4"/>
+  <!-- Script to Pipeline Init -->
+  <line x1="500" y1="170" x2="500" y2="190" class="flow-arrow"/>
+  <!-- Pipeline Init to Imputation -->
+  <line x1="650" y1="220" x2="730" y2="220" class="flow-arrow"/>
+  <!-- Imputation back to Pipeline (conceptually part of it) or to Windowing-->
+  <line x1="840" y1="250" x2="840" y2="305" class="flow-arrow" />
+  <line x1="840" y1="305" x2="650" y2="305" class="flow-arrow" /> 
+  <!-- Pipeline Init to Windowing -->
+  <line x1="500" y1="250" x2="500" y2="280" class="flow-arrow"/>
+  <!-- Windowing to Split -->
+  <line x1="500" y1="330" x2="500" y2="355" class="flow-arrow"/>
+  <!-- Split to Model Creation -->
+  <line x1="500" y1="405" x2="500" y2="430" class="flow-arrow"/>
+  <!-- Model Creation to Optimization Blocks -->
+  <line x1="500" y1="480" x2="500" y2="505" class="flow-arrow"/>
+  <line x1="500" y1="505" x2="490" y2="555" class="flow-arrow"/>
+  <line x1="500" y1="505" x2="510" y2="555" class="flow-arrow"/>
+
+  <!-- Optimization Blocks to Train Model -->
+  <line x1="320" y1="605" x2="320" y2="630" class="flow-arrow"/>
+  <line x1="680" y1="605" x2="680" y2="630" class="flow-arrow"/>
+  <line x1="320" y1="630" x2="350" y2="645" class="flow-arrow"/>
+  <line x1="680" y1="630" x2="650" y2="645" class="flow-arrow"/>
   
-  <line x1="400" y1="670" x2="400" y2="695" class="flow-arrow"/> <!-- Eval to End -->
-  <line x1="650" y1="670" x2="650" y2="695" class="flow-arrow"/> <!-- Viz to End -->
-  <line x1="875" y1="670" x2="875" y2="695" class="flow-arrow"/> <!-- Trigger to End -->
+  <!-- Train Model to Evaluate -->
+  <line x1="500" y1="670" x2="500" y2="695" class="flow-arrow"/>
+  <line x1="500" y1="720" x2="500" y2="720" class="flow-arrow"/>
+  <line x1="500" y1="720" x2="500" y2="720" class="flow-arrow"/>
+  <line x1="500" y1="720" x2="400" y2="720" class="flow-arrow"/>
 
-  <line x1="250" y1="645" x2="300" y2="645" class="flow-arrow" stroke-dasharray="4,4"/> <!-- Adapt to Eval -->
-  <line x1="500" y1="645" x2="550" y2="645" class="flow-arrow"/> <!-- Eval to Viz/Save -->
-  <line x1="750" y1="645" x2="800" y2="645" class="flow-arrow"/> <!-- Viz/Save to Trigger ID -->
+  <!-- Horizontal connections for final steps -->
+  <line x1="150" y1="745" x2="300" y2="720" class="flow-arrow" stroke-dasharray="4,4"/>
+  <line x1="500" y1="720" x2="550" y2="720" class="flow-arrow"/>
+  <line x1="750" y1="720" x2="800" y2="720" class="flow-arrow"/>
+
+  <!-- Connections to End -->
+  <line x1="150" y1="745" x2="150" y2="780" class="flow-arrow" stroke-dasharray="4,4"/> 
+  <line x1="150" y1="780" x2="450" y2="785" class="flow-arrow" stroke-dasharray="4,4"/>
+  <line x1="400" y1="745" x2="400" y2="770" class="flow-arrow"/>
+  <line x1="650" y1="745" x2="650" y2="770" class="flow-arrow"/>
+  <line x1="875" y1="745" x2="875" y2="770" class="flow-arrow"/>
 </svg>

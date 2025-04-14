@@ -4,6 +4,12 @@ import numpy as np
 from sklearn.impute import KNNImputer as SklearnKNNImputer
 from sklearn.preprocessing import StandardScaler
 from typing import Optional, Union, Type
+# --- Add PyTorch imports ---
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+# --- ------------------- ---
 
 class BaseImputer:
     """Base class for imputation methods."""
@@ -184,10 +190,10 @@ class KNNImputer(BaseImputer):
         self.fit(data, mask if mask is not None else ~np.isnan(data)) # Pass mask even if unused by fit impl.
         return self.transform(data, mask)
 
-# Placeholder for IterativeImputer - we will refactor this next
-class IterativeImputer(BaseImputer):
+# --- Renamed class ---
+class IterativeImputerWrapper(BaseImputer):
     """
-    Imputes missing values using a multivariate imputation strategy.
+    Imputes missing values using a multivariate imputation strategy (sklearn's IterativeImputer).
 
     Models each feature with missing values as a function of other features,
     and uses an iterative approach wherein it predicts the missing feature
@@ -202,7 +208,7 @@ class IterativeImputer(BaseImputer):
                  initial_strategy: str = 'mean', imputation_order: str = 'ascending',
                  scale: bool = True, verbose: int = 0, **kwargs):
         """
-        Initialize the Iterative Imputer.
+        Initialize the Iterative Imputer Wrapper.
 
         Args:
             estimator: The estimator object to use at each step of the imputation.
@@ -218,7 +224,7 @@ class IterativeImputer(BaseImputer):
         """
         # Need to import here because it's experimental
         try:
-            from sklearn.experimental import enable_iterative_imputer
+            from sklearn.experimental import enable_iterative_imputer # noqa
             from sklearn.impute import IterativeImputer as SklearnIterativeImputer
             from sklearn.linear_model import BayesianRidge
         except ImportError:
@@ -246,73 +252,52 @@ class IterativeImputer(BaseImputer):
         self._original_shape: Optional[tuple] = None
         self._n_features: Optional[int] = None
 
-    def fit(self, data: np.ndarray, mask: np.ndarray) -> 'IterativeImputer':
+    def fit(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> 'IterativeImputerWrapper':
         """
-        Fit the Iterative imputer on the observed data.
-
-        Note: For IterativeImputer, 'fit' primarily prepares the internal state
-        but the main work happens during 'transform' or 'fit_transform'.
+        Fit the Iterative Imputer on the observed data.
 
         Args:
             data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
-            mask: Boolean mask indicating observed (True/1) and missing (False/0).
+            mask: Optional boolean mask (not directly used by IterativeImputer).
 
         Returns:
-            Fitted IterativeImputer instance.
+            Fitted IterativeImputerWrapper instance.
         """
         if data.ndim != 3:
             raise ValueError("Input data must be 3-dimensional (samples, seq_len, features)")
         self._original_shape = data.shape
         self._n_features = data.shape[2]
 
-        # Reshape for sklearn imputer: (n_samples * sequence_length, n_features)
+        # Reshape data so that features are columns for the imputer
         data_reshaped = data.reshape(-1, self._n_features)
-        # Convert 0-masked data to NaN-masked data if necessary
-        data_nan = data_reshaped.copy()
-        if not np.isnan(data_nan).any(): # Check if data already uses NaNs
-            mask_reshaped = mask.reshape(-1, self._n_features)
-            data_nan[mask_reshaped == 0] = np.nan # Use mask to set NaNs
 
         if self.scale:
             self.scaler = StandardScaler()
-            # Fit scaler only on observed values to avoid bias
-            # Need to handle potential all-NaN columns if scaling
-            valid_data_for_scaling = data_nan[~np.isnan(data_nan).all(axis=1)]
-            if valid_data_for_scaling.shape[0] > 0:
-                self.scaler.fit(valid_data_for_scaling)
-                # Note: Scaling happens *before* fit_transform in sklearn's pipeline usually,
-                # but here we fit the scaler now and apply in transform.
+            observed_data = data_reshaped[~np.isnan(data_reshaped).any(axis=1)]
+            if observed_data.shape[0] > 0:
+                 self.scaler.fit(observed_data)
+                 data_scaled = self.scaler.transform(data_reshaped)
+                 # Reapply NaN mask after scaling
+                 nan_mask_reshaped = np.isnan(data_reshaped)
+                 data_scaled[nan_mask_reshaped] = np.nan
             else:
-                print("Warning: Insufficient valid data for scaling. Skipping scaling.")
-                self.scale = False
+                 print("Warning: No fully observed samples/timesteps found for scaling. Skipping scaling.")
+                 data_scaled = data_reshaped
+                 self.scale = False
         else:
-             self.scaler = None
+            data_scaled = data_reshaped
 
-        # Unlike KNN, IterativeImputer's fit *does* learn from the data structure
-        # We'll fit the scaler here, but fit the imputer during transform/fit_transform
-        # as the actual imputation happens iteratively there.
-        # However, calling fit here is good practice per sklearn API
-        # We'll scale *before* fitting the imputer itself.
-        data_to_fit = data_nan
-        if self.scale and self.scaler:
-            data_scaled_fit = self.scaler.transform(data_nan)
-             # Reapply NaN mask after scaling
-            nan_mask_reshaped = np.isnan(data_nan)
-            data_scaled_fit[nan_mask_reshaped] = np.nan
-            data_to_fit = data_scaled_fit
-
-        if np.isnan(data_to_fit).any(): # Only fit if there are NaNs
-            self.imputer.fit(data_to_fit) # Fit the imputer structure
-
+        # Fit the IterativeImputer
+        self.imputer.fit(data_scaled)
         return self
 
-    def transform(self, data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def transform(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Impute missing values using the fitted Iterative imputer.
+        Impute missing values using the fitted Iterative Imputer.
 
         Args:
-            data: Input data array (n_samples, sequence_length, n_features) with potential missing values.
-            mask: Boolean mask indicating observed/missing.
+            data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
+            mask: Optional boolean mask (not directly used here).
 
         Returns:
             Data array with missing values imputed.
@@ -326,33 +311,30 @@ class IterativeImputer(BaseImputer):
 
         current_shape = data.shape
         data_reshaped = data.reshape(-1, self._n_features)
-        data_nan = data_reshaped.copy()
-        mask_reshaped = mask.reshape(-1, self._n_features)
-        data_nan[mask_reshaped == 0] = np.nan
 
-        if not np.isnan(data_nan).any():
-            print("Warning: No missing values (NaNs) found in data provided to transform. Returning original data.")
-            return data # Return original if no NaNs
-
-        data_to_transform = data_nan
         if self.scale and self.scaler:
-            data_scaled = self.scaler.transform(data_nan)
+            data_scaled = self.scaler.transform(data_reshaped)
             # Reapply NaN mask after scaling
-            nan_mask_reshaped = np.isnan(data_nan)
+            nan_mask_reshaped = np.isnan(data_reshaped)
             data_scaled[nan_mask_reshaped] = np.nan
-            data_to_transform = data_scaled
+        else:
+            data_scaled = data_reshaped
 
-        # Perform imputation using transform (fit should have been called)
-        data_imputed_scaled = self.imputer.transform(data_to_transform)
+        # Perform imputation
+        data_imputed_scaled = self.imputer.transform(data_scaled)
 
         # Inverse scaling if data was scaled
         if self.scale and self.scaler:
+            # Check for NaNs introduced by imputer (can happen)
             if np.isnan(data_imputed_scaled).any():
                  print("Warning: NaNs detected after imputation before inverse scaling. Check IterativeImputer parameters.")
                  # Handle remaining NaNs if necessary, e.g., replace with mean of scaled data
-                 col_means = np.nanmean(data_imputed_scaled, axis=0)
+                 col_means = np.nanmean(data_imputed_scaled, axis=0) # Use nanmean
                  nan_indices = np.where(np.isnan(data_imputed_scaled))
+                 # Handle case where col_means itself might have NaNs if a column was all NaN
+                 col_means = np.nan_to_num(col_means)
                  data_imputed_scaled[nan_indices] = np.take(col_means, nan_indices[1])
+
 
             data_imputed = self.scaler.inverse_transform(data_imputed_scaled)
         else:
@@ -361,81 +343,271 @@ class IterativeImputer(BaseImputer):
         # Reshape back to original dimensions
         return data_imputed.reshape(current_shape)
 
-    def fit_transform(self, data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def fit_transform(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Fit the imputer and transform the data in one step.
+        Fit the imputer and transform the data.
 
         Args:
-            data: Input data array (n_samples, sequence_length, n_features) with potential missing values.
-            mask: Boolean mask indicating observed/missing.
+            data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
+            mask: Optional boolean mask.
 
         Returns:
             Data array with missing values imputed.
+        """
+        self.fit(data, mask if mask is not None else ~np.isnan(data))
+        return self.transform(data, mask)
+
+
+# --- LSTM Autoencoder Implementation ---
+class _LSTMAutoencoder(nn.Module):
+    """Simple LSTM Autoencoder model."""
+    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int = 1, dropout: float = 0.1):
+        super().__init__()
+        self.encoder = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.decoder = nn.LSTM(hidden_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_dim, input_dim)
+
+    def forward(self, x):
+        # Encode
+        _, (hidden, cell) = self.encoder(x)
+        # The context is the final hidden state
+        context = hidden
+
+        # Decoder setup: Use last hidden state as initial state
+        # Use a dummy input sequence of same length as input for teacher forcing (or zeros)
+        decoder_input = torch.zeros_like(x) # Using zeros as input
+        # OR Use the last encoded output as the first input:
+        # decoder_input = torch.zeros(x.size(0), x.size(1), context.size(-1), device=x.device)
+
+        # Pass context to decoder
+        decoder_output, _ = self.decoder(decoder_input, (hidden, cell))
+
+        # Reconstruct original features
+        reconstruction = self.fc(decoder_output)
+        return reconstruction
+
+class AutoencoderImputer(BaseImputer):
+    """
+    Imputes missing values using an LSTM Autoencoder.
+
+    Trains an autoencoder on the observed parts of the time series data
+    and uses the reconstruction to fill in missing values.
+    Assumes data shape (n_samples, sequence_length, n_features).
+    """
+    def __init__(self, hidden_dim: int = 32, num_layers: int = 1, dropout: float = 0.1,
+                 epochs: int = 10, batch_size: int = 32, learning_rate: float = 0.001,
+                 scale: bool = True, device: Optional[str] = None, random_state: Optional[int] = None):
+        """
+        Initialize the Autoencoder Imputer.
+
+        Args:
+            hidden_dim: Hidden dimension size for LSTM layers.
+            num_layers: Number of LSTM layers.
+            dropout: Dropout rate between LSTM layers (if num_layers > 1).
+            epochs: Number of training epochs for the autoencoder.
+            batch_size: Batch size for training.
+            learning_rate: Learning rate for the Adam optimizer.
+            scale: Whether to scale data before training/imputation using StandardScaler.
+            device: PyTorch device ('cuda', 'cpu', or None for auto-detect).
+            random_state: Seed for reproducibility.
+        """
+        if random_state is not None:
+            torch.manual_seed(random_state)
+            np.random.seed(random_state)
+
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.scale = scale
+        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"AutoencoderImputer using device: {self.device}")
+
+        self.scaler: Optional[StandardScaler] = None
+        self.model: Optional[_LSTMAutoencoder] = None
+        self._original_shape: Optional[tuple] = None
+        self._n_features: Optional[int] = None
+
+    def fit(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> 'AutoencoderImputer':
+        """
+        Fit the LSTM Autoencoder on the observed data.
+
+        Args:
+            data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
+            mask: Boolean mask indicating observed (True/1) values. If None, assumes NaNs mark missing.
+
+        Returns:
+            Fitted AutoencoderImputer instance.
         """
         if data.ndim != 3:
             raise ValueError("Input data must be 3-dimensional (samples, seq_len, features)")
         self._original_shape = data.shape
         self._n_features = data.shape[2]
 
-        current_shape = data.shape
+        if mask is None:
+            mask = ~np.isnan(data)
+
+        # --- Prepare data for training ---
+        # 1. Reshape to (n_total_samples, n_features) for scaling
         data_reshaped = data.reshape(-1, self._n_features)
-        data_nan = data_reshaped.copy()
         mask_reshaped = mask.reshape(-1, self._n_features)
-        data_nan[mask_reshaped == 0] = np.nan
 
-        if not np.isnan(data_nan).any():
-            print("Warning: No missing values (NaNs) found in data provided to fit_transform. Returning original data.")
-            # Still fit the scaler if needed, even if no NaNs currently
-            if self.scale:
-                self.scaler = StandardScaler()
-                valid_data_for_scaling = data_nan[~np.isnan(data_nan).all(axis=1)] # Should be all data here
-                if valid_data_for_scaling.shape[0] > 0:
-                    self.scaler.fit(valid_data_for_scaling)
-                else:
-                    self.scale = False # Disable scaling if fit fails
-            return data # Return original if no NaNs
-
-        data_to_impute = data_nan
+        # 2. Scale if required
         if self.scale:
             self.scaler = StandardScaler()
-            # Fit scaler only on observed values to avoid bias
-            valid_data_for_scaling = data_nan[~np.isnan(data_nan).all(axis=1)]
-            if valid_data_for_scaling.shape[0] > 0:
-                self.scaler.fit(valid_data_for_scaling)
-                data_scaled = self.scaler.transform(data_nan)
-                # Reapply NaN mask after scaling
-                nan_mask_reshaped = np.isnan(data_nan)
-                data_scaled[nan_mask_reshaped] = np.nan
-                data_to_impute = data_scaled
+            # Fit scaler only on observed values across all samples/timesteps
+            observed_flat = data_reshaped[mask_reshaped] # Get only observed values (1D)
+            if observed_flat.shape[0] > 0:
+                 # Reshape for scaler (needs 2D, even if one feature)
+                 self.scaler.fit(observed_flat.reshape(-1, 1) if self._n_features == 1 else data_reshaped[np.all(mask_reshaped, axis=1)]) # Fit on fully observed rows
+                 data_scaled = self.scaler.transform(data_reshaped)
+                 data_scaled[~mask_reshaped] = np.nan # Reapply NaNs after scaling
             else:
-                print("Warning: Insufficient valid data for scaling. Skipping scaling for fit_transform.")
-                self.scale = False # Disable scaling
-
-        # Perform imputation using fit_transform
-        data_imputed_scaled = self.imputer.fit_transform(data_to_impute)
-
-        # Inverse scaling if data was scaled
-        if self.scale and self.scaler:
-            if np.isnan(data_imputed_scaled).any():
-                 print("Warning: NaNs detected after imputation before inverse scaling. Check IterativeImputer parameters.")
-                 col_means = np.nanmean(data_imputed_scaled, axis=0)
-                 nan_indices = np.where(np.isnan(data_imputed_scaled))
-                 data_imputed_scaled[nan_indices] = np.take(col_means, nan_indices[1])
-
-            data_imputed = self.scaler.inverse_transform(data_imputed_scaled)
+                 print("Warning: No observed data found for scaling. Skipping scaling.")
+                 data_scaled = data_reshaped # Use original data if scaling fails
+                 self.scale = False # Disable scaling for transform
         else:
-            data_imputed = data_imputed_scaled
+            data_scaled = data_reshaped
 
-        # Reshape back to original dimensions
-        return data_imputed.reshape(current_shape)
+        # 3. Reshape back to (n_samples, seq_len, n_features)
+        data_scaled = data_scaled.reshape(self._original_shape)
+
+        # 4. Create training dataset - Use only *fully observed* sequences for simplicity
+        #    More advanced: train with masking loss on partially observed sequences.
+        fully_observed_mask = np.all(mask, axis=(1, 2)) # Check if entire sequence is observed
+        if not np.any(fully_observed_mask):
+            print("Warning: No fully observed sequences found. Autoencoder might not train well.")
+            # Fallback: Use any sequence with at least one observed value (might be noisy)
+            observed_indices = np.where(np.any(mask, axis=(1, 2)))[0]
+            if len(observed_indices) == 0:
+                 raise ValueError("No observed data found at all. Cannot train Autoencoder.")
+            train_data_sequences = data_scaled[observed_indices]
+        else:
+             train_data_sequences = data_scaled[fully_observed_mask]
 
 
-# Placeholder for AutoencoderImputer - might implement later if needed
-class AutoencoderImputer(BaseImputer):
-     def __init__(self, **kwargs):
-          raise NotImplementedError("AutoencoderImputer not implemented yet.")
+        # Convert to PyTorch tensors
+        train_tensor = torch.tensor(train_data_sequences, dtype=torch.float32).to(self.device)
+        train_dataset = TensorDataset(train_tensor, train_tensor) # Input = Target for AE
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 
-# Placeholder for PSOImputer - might implement later if needed
+        # --- Initialize and Train Model ---
+        self.model = _LSTMAutoencoder(
+            input_dim=self._n_features,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+            dropout=self.dropout
+        ).to(self.device)
+
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+
+        print(f"Training Autoencoder for {self.epochs} epochs...")
+        self.model.train()
+        for epoch in range(self.epochs):
+            epoch_loss = 0
+            for inputs, targets in train_loader:
+                optimizer.zero_grad()
+                reconstructions = self.model(inputs)
+                loss = criterion(reconstructions, targets)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+
+            avg_loss = epoch_loss / len(train_loader)
+            if (epoch + 1) % 10 == 0 or epoch == 0: # Print every 10 epochs
+                 print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {avg_loss:.6f}")
+
+        print("Autoencoder training finished.")
+        return self
+
+    def transform(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Impute missing values using the fitted Autoencoder.
+
+        Args:
+            data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
+            mask: Optional boolean mask indicating observed (True/1) values.
+
+        Returns:
+            Data array with missing values imputed.
+        """
+        if self.model is None:
+            raise RuntimeError("Imputer has not been fitted yet. Call fit() first.")
+        if data.ndim != 3 or data.shape[2] != self._n_features:
+            raise ValueError("Input data must be 3D with the same number of features as fitted data.")
+
+        if mask is None:
+            mask = ~np.isnan(data)
+
+        # --- Prepare data for imputation ---
+        # 1. Reshape and Scale
+        data_reshaped = data.reshape(-1, self._n_features)
+        mask_reshaped = mask.reshape(-1, self._n_features)
+        if self.scale and self.scaler:
+            data_scaled = self.scaler.transform(data_reshaped)
+            data_scaled[~mask_reshaped] = 0 # Replace NaNs with 0 for AE input (or use mean)
+        else:
+            data_scaled = np.nan_to_num(data_reshaped) # Replace NaNs if not scaling
+
+        # 2. Reshape back and convert to tensor
+        data_scaled = data_scaled.reshape(data.shape)
+        input_tensor = torch.tensor(data_scaled, dtype=torch.float32).to(self.device)
+
+        # --- Impute using Autoencoder ---
+        self.model.eval()
+        with torch.no_grad():
+            reconstructions = self.model(input_tensor).cpu().numpy()
+
+        # --- Combine original observed data with reconstructed missing data ---
+        # Reshape reconstructions and original data/mask back to 2D for easier indexing
+        reconstructions_flat = reconstructions.reshape(-1, self._n_features)
+        data_imputed_scaled_flat = data_scaled.reshape(-1, self._n_features)
+
+        # Fill only the originally missing values with reconstructions
+        missing_mask_flat = ~mask_reshaped
+        data_imputed_scaled_flat[missing_mask_flat] = reconstructions_flat[missing_mask_flat]
+
+        # --- Inverse Scale ---
+        if self.scale and self.scaler:
+            data_imputed_flat = self.scaler.inverse_transform(data_imputed_scaled_flat)
+        else:
+            data_imputed_flat = data_imputed_scaled_flat
+
+        # --- Reshape back to original 3D ---
+        return data_imputed_flat.reshape(data.shape)
+
+    def fit_transform(self, data: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Fit the imputer and transform the data.
+
+        Args:
+            data: Input data array (n_samples, sequence_length, n_features) with NaNs for missing.
+            mask: Optional boolean mask.
+
+        Returns:
+            Data array with missing values imputed.
+        """
+        self.fit(data, mask)
+        return self.transform(data, mask)
+
+
+# --- Placeholder for PSO Imputer ---
 class PSOImputer(BaseImputer):
-     def __init__(self, **kwargs):
-          raise NotImplementedError("PSOImputer not implemented yet.") 
+    """
+    Imputes missing values using Particle Swarm Optimization. (Placeholder)
+
+    TODO: Implement PSO-based imputation, likely requiring defining a PyGMO
+    problem where particles represent missing values and the fitness function
+    evaluates the quality of the imputation (e.g., smoothness, consistency).
+    """
+    def __init__(self, **kwargs):
+        raise NotImplementedError("PSOImputer is not yet implemented.")
+
+    def fit(self, data: np.ndarray, mask: np.ndarray) -> 'PSOImputer':
+        raise NotImplementedError("PSOImputer is not yet implemented.")
+
+    def transform(self, data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("PSOImputer is not yet implemented.") 

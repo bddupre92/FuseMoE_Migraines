@@ -35,6 +35,8 @@ def parse_args():
                       help='Number of days of data per patient')
     parser.add_argument('--seed', type=int, default=42,
                       help='Random seed for reproducibility')
+    parser.add_argument('--avg_migraine_freq', type=float, default=0.15,
+                      help='Average daily probability of a migraine event (controls positive rate)')
     
     return parser.parse_args()
 
@@ -350,25 +352,90 @@ def generate_stress_data(patient_ids, date_range, output_dir, migraine_dates):
     print(f"Generated stress data: {len(all_patient_data)} records")
     return all_df
 
-def generate_migraine_events(patient_ids, date_range, output_dir):
-    """Generate synthetic migraine occurrence data."""
+def generate_migraine_events(patient_ids, date_range, output_dir, avg_migraine_frequency=0.15):
+    """Generate synthetic migraine event data with controllable positive rate."""
     migraine_dir = os.path.join(output_dir, 'migraines')
     all_patient_data = []
     migraine_dates = {}
+    
+    # Set target migraine rate (days with migraine / total days across all patients)
+    # Changed from 0.5-2.0 migraines per month to a more balanced distribution
+    # For 500 patients over 60 days, we want about 20-40% migraine days
+    target_positive_rate = avg_migraine_frequency
+    print(f"Target migraine positive rate: {target_positive_rate:.2%}")
+    
+    total_days = len(patient_ids) * len(date_range)
+    target_migraine_count = int(total_days * target_positive_rate)
+    
+    # Calculate average migraines per patient to achieve target distribution
+    avg_migraines_per_patient = target_migraine_count / len(patient_ids)
+    print(f"Aiming for approximately {avg_migraines_per_patient:.1f} migraine events per patient")
+    
+    # MODIFIED: Limit the variability between patients to prevent skewed distributions
+    patient_migraine_counts = {}
+    remaining_migraines = target_migraine_count
+    
+    # Assign a base number of migraines to each patient first (more evenly distributed)
+    min_migraines = max(1, int(avg_migraines_per_patient * 0.5))  # At least 1, or half the average
+    total_min_migraines = min_migraines * len(patient_ids)
+    
+    # Ensure we don't assign more than target
+    if total_min_migraines > target_migraine_count:
+        min_migraines = max(1, int(target_migraine_count / len(patient_ids)))
+        total_min_migraines = min_migraines * len(patient_ids)
+    
+    # First pass: assign minimum migraines to each patient
+    for patient_id in patient_ids:
+        patient_migraine_counts[patient_id] = min_migraines
+    remaining_migraines -= total_min_migraines
+    
+    # Second pass: distribute remaining migraines with controlled randomness
+    if remaining_migraines > 0:
+        # Calculate maximum additional migraines per patient to prevent extremes
+        max_additional = min(
+            int(avg_migraines_per_patient * 1.5) - min_migraines,
+            int(remaining_migraines / (len(patient_ids) * 0.3))  # Distribute to ~30% of patients
+        )
+        max_additional = max(1, max_additional)
+        
+        # Shuffle patients to randomize distribution
+        shuffled_patients = patient_ids.copy()
+        np.random.shuffle(shuffled_patients)
+        
+        # Distribute remaining migraines with decreasing probability
+        for patient_id in shuffled_patients:
+            if remaining_migraines <= 0:
+                break
+            
+            # Decide how many additional migraines for this patient
+            additional = min(
+                np.random.randint(0, max_additional + 1),
+                remaining_migraines
+            )
+            
+            if additional > 0:
+                patient_migraine_counts[patient_id] += additional
+                remaining_migraines -= additional
     
     for patient_id in patient_ids:
         patient_data = []
         migraine_dates[patient_id] = []
         
-        # Patient-specific migraine frequency (average migraines per month)
-        migraine_frequency = np.random.uniform(0.05, 0.5)
-        expected_migraines = int(migraine_frequency * len(date_range) / 30)
+        # Get the assigned migraine count for this patient
+        migraine_count = patient_migraine_counts[patient_id]
+        
+        # Ensure we don't exceed reasonable limits
+        migraine_count = min(migraine_count, len(date_range) // 3)
         
         # Generate random migraine dates
-        if expected_migraines > 0:
-            num_migraines = max(1, np.random.poisson(expected_migraines))
+        if migraine_count > 0:
             possible_days = list(range(2, len(date_range)))  # Skip first 2 days to allow for prodromal features
-            migraine_days = sorted(np.random.choice(possible_days, min(num_migraines, len(possible_days)), replace=False))
+            # Ensure we don't try to pick more days than are available
+            migraine_days = sorted(np.random.choice(
+                possible_days, 
+                min(migraine_count, len(possible_days)), 
+                replace=False
+            ))
             
             for day_idx in migraine_days:
                 migraine_date = date_range[day_idx]
@@ -422,14 +489,19 @@ def generate_migraine_events(patient_ids, date_range, output_dir):
         if not df.empty:
             df.to_csv(os.path.join(migraine_dir, f"{patient_id}_migraines.csv"), index=False)
             all_patient_data.extend(patient_data)
-        # else: # Optional: print a message if a patient has no migraines
-            # print(f"Note: Patient {patient_id} has no generated migraine events.")
     
     # Create a combined CSV with all patients (only includes patients with events)
     all_df = pd.DataFrame(all_patient_data)
-    all_df.to_csv(os.path.join(migraine_dir, "all_migraine_data.csv"), index=False)
+    if not all_df.empty:
+        all_df.to_csv(os.path.join(migraine_dir, "all_migraine_data.csv"), index=False)
+    else:
+        print("Warning: No migraine events were generated. Creating an empty file.")
+        pd.DataFrame(columns=['patient_id', 'date', 'start_time', 'duration_hours', 'severity', 
+                             'aura', 'nausea', 'photophobia', 'phonophobia', 'triggers']
+                   ).to_csv(os.path.join(migraine_dir, "all_migraine_data.csv"), index=False)
     
-    print(f"Generated migraine data: {len(all_patient_data)} events")
+    actual_rate = len(all_patient_data) / total_days
+    print(f"Generated migraine data: {len(all_patient_data)} events (actual positive rate: {actual_rate:.2%})")
     return all_df, migraine_dates
 
 def create_dataset_metadata(args, output_dir, patient_ids, date_range, data_summary):
@@ -474,7 +546,7 @@ def main():
     
     # First generate migraine events (to inform other modalities)
     print("Generating migraine events...")
-    migraine_df, migraine_dates = generate_migraine_events(patient_ids, date_range, args.output_dir)
+    migraine_df, migraine_dates = generate_migraine_events(patient_ids, date_range, args.output_dir, args.avg_migraine_freq)
     
     # Generate data for each modality
     print("Generating EEG data...")
@@ -504,4 +576,4 @@ def main():
     print(f"Data saved to {args.output_dir}")
 
 if __name__ == "__main__":
-    main() 
+    main()

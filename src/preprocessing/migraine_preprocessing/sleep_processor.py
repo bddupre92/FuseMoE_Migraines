@@ -276,34 +276,54 @@ class SleepProcessor:
     def process_sleep_dataset(self, sleep_data_df: pd.DataFrame) -> pd.DataFrame:
         """
         Process a dataset of sleep records provided as a DataFrame.
+        Adds multi-day trend features.
 
         Args:
             sleep_data_df: DataFrame containing sleep data (e.g., loaded from CSV).
+                         Requires 'patient_id' and a date/timestamp column.
 
         Returns:
-            DataFrame with processed sleep features.
+            DataFrame with processed sleep features including trends.
         """
-        all_features = []
         if sleep_data_df.empty:
-            return pd.DataFrame(all_features)
+            return pd.DataFrame()
+
+        # --- Check for required columns --- #
+        required_cols = ['patient_id', 'date'] # Assuming 'date' represents the night of sleep
+        if not all(col in sleep_data_df.columns for col in required_cols):
+            print(f"Warning: Missing required columns ({required_cols}) for sleep trend calculation. Skipping trends.")
+            # Proceed with basic processing without trends
+            # ... (existing loop calling process_sleep_record) ...
+            # ... (existing conversion back to DataFrame) ...
+            return sleep_df # Return DF without trends
+        # --- End Check --- #
 
         print(f"Processing {len(sleep_data_df)} sleep records from DataFrame...")
         # Convert DataFrame rows to dictionaries for process_sleep_record
         sleep_records_list = sleep_data_df.to_dict('records')
 
-        for record_dict in sleep_records_list:
+        all_features = []
+        processed_indices = [] # To keep track of original indices if needed
+        for i, record_dict in enumerate(sleep_records_list):
             try:
-                # Ensure timestamps are handled correctly if they are strings
-                if 'start_time' in record_dict and isinstance(record_dict['start_time'], str):
-                    record_dict['start_time'] = pd.Timestamp(record_dict['start_time'])
-                if 'end_time' in record_dict and isinstance(record_dict['end_time'], str):
-                    record_dict['end_time'] = pd.Timestamp(record_dict['end_time'])
+                # Ensure timestamps/dates are handled correctly
                 if 'date' in record_dict and isinstance(record_dict['date'], str):
-                     record_dict['date'] = pd.Timestamp(record_dict['date']).date()
-                # Add similar checks for other potential date/time fields if needed
+                     record_dict['date'] = pd.to_datetime(record_dict['date']).date()
+                # Ensure other relevant time fields are parsed if they exist
+                if 'sleep_start' in record_dict and isinstance(record_dict['sleep_start'], str):
+                    record_dict['sleep_start'] = pd.Timestamp(record_dict['sleep_start'])
+                if 'sleep_end' in record_dict and isinstance(record_dict['sleep_end'], str):
+                    record_dict['sleep_end'] = pd.Timestamp(record_dict['sleep_end'])
 
                 processed_features = self.process_sleep_record(record_dict)
+                
+                # Add patient_id and date back for grouping/sorting
+                processed_features['patient_id'] = record_dict.get('patient_id')
+                processed_features['date'] = record_dict.get('date') 
+                
                 all_features.append(processed_features)
+                processed_indices.append(i) # Store original index
+
             except Exception as e:
                 print(f"Warning: Skipping sleep record due to processing error: {e}. Record: {record_dict}")
                 continue
@@ -313,18 +333,54 @@ class SleepProcessor:
              return pd.DataFrame(all_features)
 
         sleep_df = pd.DataFrame(all_features)
-        # Convert timestamp column to datetime and set as index
-        if 'timestamp' in sleep_df.columns:
-             try:
-                  sleep_df['timestamp'] = pd.to_datetime(sleep_df['timestamp'])
-                  sleep_df = sleep_df.set_index('timestamp')
-                  sleep_df = sleep_df.sort_index() # Ensure index is sorted
-             except Exception as e:
-                  print(f"Warning: Could not set DatetimeIndex for sleep data: {e}")
-        else:
-             print("Warning: 'timestamp' column missing after sleep processing.")
-
-        # --- Add check to drop non-numeric columns like 'date' --- 
+        
+        # Convert date column to datetime for sorting
+        sleep_df['date'] = pd.to_datetime(sleep_df['date'])
+        
+        # Sort by patient and date - CRUCIAL for rolling calculations
+        sleep_df = sleep_df.sort_values(by=['patient_id', 'date'])
+        
+        # --- Calculate Trend Features (Grouped by Patient) --- #
+        trend_cols = ['sleep_duration', 'sleep_efficiency', 'deep_sleep', 'rem_sleep']
+        print(f"Calculating multi-day sleep trends for columns: {trend_cols}...")
+        
+        for col in trend_cols:
+            if col in sleep_df.columns:
+                # Rolling averages (3-day and 7-day)
+                sleep_df[f'{col}_avg_3d'] = sleep_df.groupby('patient_id')[col].transform(
+                    lambda x: x.rolling(window=3, min_periods=1).mean()
+                )
+                sleep_df[f'{col}_avg_7d'] = sleep_df.groupby('patient_id')[col].transform(
+                    lambda x: x.rolling(window=7, min_periods=1).mean()
+                )
+                # Change from previous day
+                sleep_df[f'{col}_change_1d'] = sleep_df.groupby('patient_id')[col].transform(
+                    lambda x: x.diff(1)
+                ).fillna(0)
+            else:
+                print(f"Warning: Column '{col}' not found for trend calculation.")
+        
+        # --- Create a general sleep disruption score --- # 
+        # Deviation from 7-day average duration and efficiency
+        sleep_df['duration_deviation_7d'] = abs(sleep_df['sleep_duration'] - sleep_df['sleep_duration_avg_7d'])
+        sleep_df['efficiency_deviation_7d'] = abs(sleep_df['sleep_efficiency'] - sleep_df['sleep_efficiency_avg_7d'])
+        # Higher number of awakenings also indicates disruption
+        awakenings_norm = sleep_df['awakenings'] / (sleep_df['awakenings'].max() + 1e-6) # Normalize
+        
+        # Combine into a disruption score (weights can be tuned)
+        sleep_df['sleep_disruption_score'] = (
+            sleep_df['duration_deviation_7d'] * 0.4 + 
+            sleep_df['efficiency_deviation_7d'] * 0.3 + 
+            awakenings_norm * 0.3
+        ).fillna(0)
+        
+        # --- Set 'date' as index AFTER calculations requiring it as a column --- #
+        sleep_df = sleep_df.set_index('date')
+        
+        # Drop patient_id if it's no longer needed as a column (kept in index implicitly if date index works)
+        # sleep_df = sleep_df.drop(columns=['patient_id'])
+        
+        # --- Final check for non-numeric columns --- #
         cols_to_drop = []
         numeric_cols = []
         for col in sleep_df.columns:
@@ -351,6 +407,10 @@ class SleepProcessor:
              print(f"Dropped non-numeric columns from Sleep data: {cols_to_drop}")
         # --- End check --- 
 
+        # --- Add Debug Print --- #
+        print(f"DEBUG: Added sleep trend features. Columns: {sleep_df.columns}")
+        # --- End Debug Print --- #
+        
         return sleep_df
     
     def get_migraine_risk_from_sleep(self, sleep_data: pd.DataFrame) -> pd.DataFrame:

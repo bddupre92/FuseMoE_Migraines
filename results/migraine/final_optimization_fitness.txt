@@ -1,9 +1,0 @@
---- Final Optimization Summary ---
-Stage: Expert Evolution (de)
-  Best Fitness: -0.218546
-  Achieved at Evaluation Count: 710
-
-Stage: Gating Pso (pso)
-  Best Fitness: 0.617598
-  Achieved at Evaluation Count: 110
-

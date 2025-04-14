@@ -293,29 +293,59 @@ class WeatherConnector:
         # Create a copy to avoid modifying the original
         processed_df = weather_df.copy()
         
+        # Ensure timestamp is index for diff/rolling operations
+        if not isinstance(processed_df.index, pd.DatetimeIndex):
+            if 'timestamp' in processed_df.columns:
+                processed_df['timestamp'] = pd.to_datetime(processed_df['timestamp'])
+                processed_df = processed_df.set_index('timestamp').sort_index()
+            else:
+                print("Warning: Cannot set timestamp index in process_weather_data.")
+                return processed_df # Return early if no timestamp
+
         # Calculate additional features
         
-        # 1. Rolling pressure changes (3-hour window)
+        # 1. Pressure changes (absolute diff over N hours)
+        processed_df['pressure_change_1h'] = processed_df['pressure'].diff(1).fillna(0)
         processed_df['pressure_change_3h'] = processed_df['pressure'].diff(3).fillna(0)
+        processed_df['pressure_change_6h'] = processed_df['pressure'].diff(6).fillna(0) # New
+        processed_df['pressure_change_12h'] = processed_df['pressure'].diff(12).fillna(0) # New
         
         # 2. Rapid pressure changes (boolean flag for changes > 5 hPa in 3 hours)
-        processed_df['rapid_pressure_change'] = abs(processed_df['pressure_change_3h']) > 5
+        processed_df['rapid_pressure_change_3h'] = abs(processed_df['pressure_change_3h']) > 5 # Renamed for clarity
+        processed_df['rapid_pressure_change_6h'] = abs(processed_df['pressure_change_6h']) > 8 # New threshold for longer window
         
-        # 3. Temperature variations
-        processed_df['temp_change'] = processed_df['temperature'].diff().fillna(0)
-        processed_df['temp_change_day'] = processed_df['temperature'].diff(24).fillna(0)
+        # 3. Temperature changes (absolute diff over N hours)
+        processed_df['temp_change_1h'] = processed_df['temperature'].diff(1).fillna(0) # Renamed
+        processed_df['temp_change_6h'] = processed_df['temperature'].diff(6).fillna(0) # New
+        processed_df['temp_change_12h'] = processed_df['temperature'].diff(12).fillna(0) # New
+        processed_df['temp_change_24h'] = processed_df['temperature'].diff(24).fillna(0) # Renamed
         
-        # 4. Humidity variations
-        processed_df['humidity_change'] = processed_df['humidity'].diff().fillna(0)
+        # 4. Humidity changes (absolute diff over N hours)
+        processed_df['humidity_change_1h'] = processed_df['humidity'].diff(1).fillna(0) # Renamed
+        processed_df['humidity_change_6h'] = processed_df['humidity'].diff(6).fillna(0) # New
+
+        # 5. Volatility features (rolling standard deviation)
+        processed_df['pressure_std_6h'] = processed_df['pressure'].rolling(window=6, min_periods=1).std().fillna(0) # New
+        processed_df['temp_std_6h'] = processed_df['temperature'].rolling(window=6, min_periods=1).std().fillna(0) # New
         
-        # 5. Weather instability score (combined metric)
-        # Higher scores indicate more unstable weather (potential migraine trigger)
+        # 6. Weather instability score (combined metric - updated with new features)
+        # Weights can be tuned later
         processed_df['weather_instability'] = (
-            abs(processed_df['pressure_change']) / 10 +
-            abs(processed_df['temp_change']) / 5 +
-            abs(processed_df['humidity_change']) / 20
-        )
+            abs(processed_df['pressure_change_3h']) * 0.3 +
+            abs(processed_df['pressure_change_6h']) * 0.2 +
+            abs(processed_df['temp_change_6h']) * 0.2 +
+            abs(processed_df['humidity_change_6h']) * 0.1 +
+            processed_df['pressure_std_6h'] * 0.1 +
+            processed_df['temp_std_6h'] * 0.1
+        ).fillna(0)
+
+        # Drop intermediate columns if needed, or keep them as features
+        # For now, keeping all calculated features
         
+        # --- Add Debug Print --- #
+        print(f"DEBUG: Added weather trend features. Columns: {processed_df.columns}")
+        # --- End Debug Print --- #
+
         return processed_df
     
     def get_migraine_risk_from_weather(self, weather_data: pd.DataFrame) -> pd.DataFrame:

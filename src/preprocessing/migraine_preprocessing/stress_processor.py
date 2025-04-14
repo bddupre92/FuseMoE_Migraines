@@ -262,97 +262,127 @@ class StressProcessor:
     def process_hrv_dataset(self, hrv_data_df: pd.DataFrame) -> pd.DataFrame:
         """
         Process a dataset of HRV/stress records provided as a DataFrame.
+        Adds stress pattern and trend features.
 
         Args:
             hrv_data_df: DataFrame containing HRV/stress data (e.g., loaded from CSV).
+                         Requires 'patient_id' and a timestamp column.
 
         Returns:
-            DataFrame with processed stress features.
+            DataFrame with processed stress features including patterns.
         """
-        all_features = []
         if hrv_data_df.empty:
-            return pd.DataFrame(all_features)
+            return pd.DataFrame()
+        
+        # --- Check for required columns --- #
+        required_cols = ['patient_id', 'timestamp'] 
+        if not all(col in hrv_data_df.columns for col in required_cols):
+            print(f"Warning: Missing required columns ({required_cols}) for stress trend calculation. Skipping trends.")
+            # Proceed with basic processing without trends
+            # ... (existing loop calling process_hrv_data) ...
+            # ... (existing conversion back to DataFrame) ...
+            return stress_df # Return DF without trends
+        # --- End Check --- #
 
         print(f"Processing {len(hrv_data_df)} HRV/stress records from DataFrame...")
         hrv_records_list = hrv_data_df.to_dict('records')
 
+        all_features = []
         for record_dict in hrv_records_list:
-            original_timestamp = None # Store the original timestamp
+            # ... (existing timestamp validation and RR interval parsing) ...
             try:
-                # --- Check and store timestamp BEFORE processing --- 
+                # Timestamp validation
+                original_timestamp = None
                 if 'timestamp' not in record_dict or pd.isna(record_dict['timestamp']):
-                    print(f"Warning: Skipping HRV record due to missing or invalid timestamp. Record: {record_dict}")
                     continue
-                
-                # Attempt to parse timestamp robustly if it's a string
                 if isinstance(record_dict['timestamp'], str):
-                    try:
-                        original_timestamp = pd.to_datetime(record_dict['timestamp'])
-                    except Exception as ts_err:
-                        print(f"Warning: Could not parse timestamp string '{record_dict['timestamp']}'. Skipping record. Error: {ts_err}")
-                        continue
+                    original_timestamp = pd.to_datetime(record_dict['timestamp'], errors='coerce')
                 elif isinstance(record_dict['timestamp'], (pd.Timestamp, datetime)):
-                    original_timestamp = pd.Timestamp(record_dict['timestamp']) # Ensure it's a pandas Timestamp
-                else:
-                     print(f"Warning: Skipping HRV record due to unexpected timestamp type: {type(record_dict['timestamp'])}. Record: {record_dict}")
-                     continue
-                
-                # Check if timestamp parsing resulted in NaT
+                    original_timestamp = pd.Timestamp(record_dict['timestamp'])
                 if pd.isna(original_timestamp):
-                    print(f"Warning: Timestamp parsed as NaT. Skipping record. Original value: {record_dict['timestamp']}")
                     continue
-                # ----------------------------------------------------
-
-                # RR intervals might be stored as strings in CSV, need to convert
-                # Assuming they are stored as space-separated numbers or similar
-                # This part is highly dependent on the actual CSV format
+                    
+                # RR Interval parsing (keep existing logic)
                 if 'rr_intervals' in record_dict and isinstance(record_dict['rr_intervals'], str):
                      try:
-                          # Example: Convert space-separated string to list of floats
                           rr_list = [float(x) for x in record_dict['rr_intervals'].split()] 
                           record_dict['rr_intervals'] = rr_list
                      except ValueError:
-                          print(f"Warning: Could not parse rr_intervals string: {record_dict['rr_intervals']}. Skipping record.")
                           continue 
-                # Add similar parsing for 'scl' if needed
 
                 processed_features = self.process_hrv_data(record_dict)
                 
-                # --- Ensure timestamp is in the processed features --- 
                 if processed_features is not None:
-                    processed_features['timestamp'] = original_timestamp # Use the validated timestamp
+                    processed_features['timestamp'] = original_timestamp
+                    # --- Add patient_id for grouping --- #
+                    processed_features['patient_id'] = record_dict.get('patient_id')
+                    # --- --------------------------- --- #
                     all_features.append(processed_features)
-                # ----------------------------------------------------
 
             except Exception as e:
                 print(f"Warning: Skipping HRV record due to processing error: {e}. Record: {record_dict}")
                 continue
-
-        # Convert list of feature dictionaries to DataFrame
+        # ... (existing conversion to DataFrame) ...
         if not all_features:
-            return pd.DataFrame(all_features)
-
+            return pd.DataFrame()
         stress_df = pd.DataFrame(all_features)
 
-        # Convert timestamp column to datetime and set as index
+        # Convert timestamp column to datetime and sort by patient + timestamp
         if 'timestamp' in stress_df.columns:
-             # We should have only valid timestamps now, but keep the check just in case
-             initial_len = len(stress_df)
-             # Use errors='coerce' for final safety, though NaNs shouldn't occur now
-             stress_df['timestamp'] = pd.to_datetime(stress_df['timestamp'], errors='coerce') 
-             stress_df = stress_df.dropna(subset=['timestamp']) # Drop if coercion failed
-             if len(stress_df) < initial_len:
-                  dropped_count = initial_len - len(stress_df)
-                  print(f"Warning: Dropped {dropped_count} rows from stress data due to timestamp conversion failure AFTER processing.")
-             
-             # No need for further try-except if dropna handles coercion errors
-             stress_df = stress_df.set_index('timestamp')
-             stress_df = stress_df.sort_index() # Ensure index is sorted
-             
+            stress_df['timestamp'] = pd.to_datetime(stress_df['timestamp'], errors='coerce') 
+            stress_df = stress_df.dropna(subset=['timestamp']) 
+            # --- Sort by patient_id and timestamp --- #
+            if 'patient_id' in stress_df.columns:
+                 stress_df = stress_df.sort_values(by=['patient_id', 'timestamp'])
+                 stress_df = stress_df.set_index('timestamp') # Set index AFTER sorting
+            else:
+                 # Fallback if no patient_id
+                 stress_df = stress_df.sort_values(by=['timestamp'])
+                 stress_df = stress_df.set_index('timestamp')
+            # ------------------------------------ #
         else:
              print("Warning: 'timestamp' column missing after stress processing.")
+             return pd.DataFrame() # Cannot proceed without timestamp
 
-        # --- Also drop non-numeric columns (like patient_id, source if they exist) --- 
+        # --- Calculate Stress Pattern/Trend Features (Grouped by Patient) --- #
+        if 'patient_id' in stress_df.columns and 'stress_score' in stress_df.columns:
+            print("Calculating stress pattern features...")
+            # Change in stress score
+            stress_df['stress_change_1h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.diff(1)
+            ).fillna(0)
+            stress_df['stress_change_3h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.diff(3)
+            ).fillna(0)
+            stress_df['stress_change_6h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.diff(6)
+            ).fillna(0)
+
+            # Rolling average stress score
+            stress_df['stress_avg_6h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.rolling(window=6, min_periods=1).mean()
+            )
+            stress_df['stress_avg_24h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.rolling(window=24, min_periods=1).mean()
+            )
+
+            # Sustained high stress flag
+            stress_df['sustained_high_stress_6h'] = (stress_df['stress_avg_6h'] > 7).astype(int)
+
+            # Stress volatility (rolling std dev)
+            stress_df['stress_std_6h'] = stress_df.groupby('patient_id')['stress_score'].transform(
+                lambda x: x.rolling(window=6, min_periods=1).std()
+            ).fillna(0)
+        else:
+            print("Warning: Cannot calculate stress trends. Missing 'patient_id' or 'stress_score'.")
+        # --- End Stress Pattern Calculation --- #
+
+        # --- Drop patient_id column AFTER grouping calculations --- #
+        if 'patient_id' in stress_df.columns:
+             stress_df = stress_df.drop(columns=['patient_id'])
+        # --- ----------------------------------------------- --- #
+
+        # --- Drop other non-numeric columns (existing logic) --- #
         cols_to_drop = []
         for col in stress_df.columns:
             if col == stress_df.index.name: # Skip index
@@ -381,6 +411,10 @@ class StressProcessor:
                  stress_df = stress_df.drop(columns=cols_to_drop)
                  print(f"Dropped non-numeric columns from Stress data: {cols_to_drop}")
         # --- End check --- 
+
+        # --- Add Debug Print --- #
+        print(f"DEBUG: Added stress pattern features. Columns: {stress_df.columns}")
+        # --- End Debug Print --- #
 
         return stress_df
     
