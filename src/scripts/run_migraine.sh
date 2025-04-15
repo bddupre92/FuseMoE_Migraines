@@ -55,32 +55,36 @@ else
 fi
 
 # Create data and output directories
-DATA_DIR="$BASE_DIR/data/migraine"
+export DATA_DIR="$BASE_DIR/data/migraine"
 mkdir -p "$DATA_DIR"
 echo "Data directory: $DATA_DIR"
 
-OUTPUT_DIR="$BASE_DIR/results/migraine"
-mkdir -p "$OUTPUT_DIR"
-echo "Output directory: $OUTPUT_DIR"
+export RESULTS_DIR="$BASE_DIR/results/migraine"
+mkdir -p "$RESULTS_DIR"
+echo "Output directory: $RESULTS_DIR"
 
 # --- Default Parameters for Full Run ---
-NUM_PATIENTS=500
-NUM_DAYS=60
-AVG_MIGRAINE_FREQ=0.2
-CV_FOLDS=5
-EXPERT_POP_SIZE=20
-GATING_POP_SIZE=20
-EXPERT_GENS=20
-GATING_GENS=20
-DEV_MODE_FLAG="" # Empty by default
+export NUM_PATIENTS=500
+export NUM_DAYS=60
+export AVG_MIGRAINE_FREQ=0.2
+export CV_FOLDS=5
+export EXPERT_POP_SIZE=20
+export GATING_POP_SIZE=20
+export EXPERT_GENS=20
+export GATING_GENS=20
+export DEV_MODE_FLAG="" # Empty by default
+export SEED=42 # Define SEED variable explicitly here
 
 # Set default cross-validation parameters
-CV_STRATEGY="stratified" # Default, can be overridden
-CV_SHUFFLE="--cv_shuffle"  # Enable shuffling by default
+export CV_STRATEGY="groupkfold" # Options: "groupkfold", "stratifiedkfold"
+export CV_SHUFFLE="--cv_shuffle"  # Enable shuffling by default
 
 # Set default data balancing parameters
-BALANCE_METHOD="smote"
-SAMPLING_RATIO="0.8"  # Increased from 0.5 for better balance
+export BALANCE_METHOD="smote"
+export SAMPLING_RATIO="0.8" # Target ratio for SMOTE/random sampling
+export CLASS_WEIGHT="balanced" # Options: "balanced", "none"
+export N_SPLITS=5
+export PREDICTION_HORIZON=1 # Changed from 6 to 1
 
 # --- Parse Command-Line Arguments ---
 DEV_MODE_ENABLED=false
@@ -149,7 +153,8 @@ python "$SCRIPT_DIR/create_migraine_dataset.py" \
     --output_dir "$DATA_DIR" \
     --num_patients $NUM_PATIENTS \
     --days $NUM_DAYS \
-    --avg_migraine_freq $AVG_MIGRAINE_FREQ
+    --avg_migraine_freq $AVG_MIGRAINE_FREQ \
+    --seed $SEED
 echo "Migraine dataset generation complete."
 
 # === Step 2: Run the migraine prediction pipeline ===
@@ -160,7 +165,7 @@ echo "  Dev Mode Flag for Python: $DEV_MODE_FLAG"
 python "$SCRIPT_DIR/run_migraine_prediction.py" \
     --data_dir "$DATA_DIR" \
     --cache_dir "$BASE_DIR/cache/migraine" \
-    --output_dir "$OUTPUT_DIR" \
+    --output_dir "$RESULTS_DIR" \
     --start_date "$START_DATE_STR" \
     --end_date "$END_DATE_STR" \
     --expert_algorithm "de" \
@@ -178,19 +183,18 @@ python "$SCRIPT_DIR/run_migraine_prediction.py" \
     --router_type "joint" \
     --imputation_method "knn" \
     --cv $CV_FOLDS \
-    --cv_strategy "$CV_STRATEGY" \
+    --cv_strategy "groupkfold" \
     $CV_SHUFFLE \
     --balance_method "$BALANCE_METHOD" \
-    --sampling_ratio "$SAMPLING_RATIO" \
-    --class_weight "balanced" \
+    --sampling_ratio $SAMPLING_RATIO \
+    --class_weight balanced \
     --threshold_search \
     --optimize_metric "balanced_accuracy" \
-    --use_pygmo \
     --batch_size 32 \
     $DEV_MODE_FLAG \
     $CPU_FLAG
 
-echo "Migraine prediction with cross-validation completed. Results saved to $OUTPUT_DIR"
+echo "Migraine prediction with cross-validation completed. Results saved to $RESULTS_DIR"
 
 # === Optional: Run advanced patient-specific adaptation ===
 # Note: Dev mode logic is NOT added here, as adaptation is usually specific
@@ -205,7 +209,7 @@ if [ "$PATIENT_ADAPTATION" = true ]; then
     python "$SCRIPT_DIR/run_migraine_prediction.py" \
         --data_dir "$DATA_DIR" \
         --cache_dir "$BASE_DIR/cache/migraine" \
-        --output_dir "$OUTPUT_DIR/patient_$PATIENT_ID" \
+        --output_dir "$RESULTS_DIR/patient_$PATIENT_ID" \
         --patient_id "$PATIENT_ID" \
         --expert_algorithm "de" \
         --gating_algorithm "pso" \
@@ -215,15 +219,14 @@ if [ "$PATIENT_ADAPTATION" = true ]; then
         --gating_generations 3 \
         --patient_adaptation \
         --patient_iterations 5 \
-        --load_base_model "$OUTPUT_DIR/best_model.pth" \
+        --load_base_model "$RESULTS_DIR/best_model.pth" \
         --cv 1 \
-        --balance_method "$BALANCE_METHOD" \
-        --sampling_ratio "$SAMPLING_RATIO" \
-        --class_weight "balanced" \
         --threshold_search \
         --optimize_metric "balanced_accuracy" \
         --batch_size 32 \
         $CPU_FLAG
     
-    echo "Patient-specific adaptation completed. Results saved to $OUTPUT_DIR/patient_$PATIENT_ID"
+    echo "Patient-specific adaptation completed. Results saved to $RESULTS_DIR/patient_$PATIENT_ID"
 fi
+
+echo "Script finished."

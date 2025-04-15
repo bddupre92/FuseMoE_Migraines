@@ -901,167 +901,182 @@ def weighted_bce_loss(outputs, targets, pos_weight=None):
     return loss_fn(outputs, targets)
 
 
-def balance_dataset(X, y, method='smote', sampling_ratio=0.5, random_state=None):
-    """
-    Balance the dataset to address class imbalance.
+# --- Helper function for index-based balancing (Option 1) ---
+def _balance_indices(X_dict, y_np, method, sampling_ratio, random_state=None):
+    """Helper function for index-based random over/under sampling."""
+    import numpy as np # Ensure numpy is imported locally if needed
+    import logging     # Ensure logging is available
     
-    Args:
-        X: Input features (list of dictionaries for multimodal data)
-        y: Target labels
-        method: Resampling method - 'smote', 'random_over', 'random_under', or 'none'
-        sampling_ratio: Target ratio of minority to majority class (for oversampling)
-                       or majority to minority (for undersampling)
-        random_state: Random seed for reproducible results
-    
-    Returns:
-        X_resampled, y_resampled: Balanced features and labels
-    """
-    import numpy as np
-    
-    # If no balancing requested, return original data
-    if method.lower() == 'none':
-        return X, y
-    
-    # Calculate class distribution
-    y_np = np.array(y)
     unique_classes, counts = np.unique(y_np, return_counts=True)
-    logging.debug(f"balance_dataset: Input y shape: {y_np.shape}, Input y distribution: {counts}")
-    
-    # If already balanced or only one class, return original data
-    if len(unique_classes) <= 1 or (counts[0] == counts[1]):
-        logging.info("Balancing skipped: Data already balanced or only one class present.")
-        logging.info(f"Balancing method: {method}, Target ratio (Minority/Majority): {sampling_ratio}")
-        return X, y
-    
-    # Identify minority and majority classes
+    if len(unique_classes) <= 1:
+        logging.warning("_balance_indices: Only one class present, skipping balancing.")
+        return X_dict, y_np
+        
     minority_class = unique_classes[np.argmin(counts)]
     majority_class = unique_classes[np.argmax(counts)]
     
-    minority_indices = np.where(y_np == minority_class)[0]
-    majority_indices = np.where(y_np == majority_class)[0]
+    pos_indices = np.where(y_np == minority_class)[0] # Assuming minority is positive (class 1), adjust if needed
+    neg_indices = np.where(y_np == majority_class)[0] # Assuming majority is negative (class 0)
     
-    logging.info(f"Balancing: Original class distribution - Class {minority_class}: {len(minority_indices)}, Class {majority_class}: {len(majority_indices)}")
+    # Ensure minority/majority assigned correctly if class 0 is minority
+    if counts[0] < counts[1]:
+        pos_indices, neg_indices = neg_indices, pos_indices # Swap if class 0 is minority
+        
+    logging.info(f"_balance_indices ({method}): Original counts - Minority ({minority_class}): {len(pos_indices)}, Majority ({majority_class}): {len(neg_indices)}")
+
+    rng = np.random.default_rng(random_state) # Use random state for reproducibility
     
-    if method.lower() == 'random_under':
-        # Random undersampling of majority class
-        n_samples = len(minority_indices)
-        # Use random_state for reproducible choice
-        rng = np.random.default_rng(random_state)
-        undersampled_majority = rng.choice(majority_indices, size=n_samples, replace=False)
+    if method == 'random_over':
+        n_target = int(len(neg_indices) * sampling_ratio) # Target number of minority samples relative to majority
+        if len(pos_indices) == 0: # Handle case with no minority samples
+            logging.warning("Cannot oversample: No minority class samples found.")
+            combined_indices = neg_indices
+        elif len(pos_indices) < n_target:
+            logging.debug(f"  Oversampling minority to {n_target}")
+            pos_indices_oversampled = rng.choice(pos_indices, n_target, replace=True)
+            combined_indices = np.concatenate([pos_indices_oversampled, neg_indices])
+        else:
+            # Minority count already meets or exceeds target ratio
+            logging.debug("  Minority count meets target ratio, no oversampling needed.")
+            combined_indices = np.concatenate([pos_indices, neg_indices]) # Keep all original samples
+            
+    elif method == 'random_under':
+        n_target = int(len(pos_indices) / sampling_ratio) if sampling_ratio > 0 else 0 # Target number of majority samples relative to minority
+        if len(neg_indices) == 0: # Handle case with no majority samples
+             logging.warning("Cannot undersample: No majority class samples found.")
+             combined_indices = pos_indices
+        elif len(neg_indices) > n_target:
+            logging.debug(f"  Undersampling majority to {n_target}")
+            neg_indices_undersampled = rng.choice(neg_indices, n_target, replace=False)
+            combined_indices = np.concatenate([pos_indices, neg_indices_undersampled])
+        else:
+            # Majority count already meets or exceeds target ratio
+            logging.debug("  Majority count meets target ratio, no undersampling needed.")
+            combined_indices = np.concatenate([pos_indices, neg_indices]) # Keep all original samples
+            
+    else: # Should not happen if called from balance_dataset, but handle defensively
+        logging.warning(f"_balance_indices: Unknown method '{method}'. Returning original data.")
+        return X_dict, y_np
         
-        # Combine minority and undersampled majority
-        selected_indices = np.concatenate([minority_indices, undersampled_majority])
-        np.random.shuffle(selected_indices)
-        
-        X_resampled = [X[i] for i in selected_indices]
-        y_resampled = [y[i] for i in selected_indices]
-        
-    elif method.lower() == 'random_over':
-        # Random oversampling of minority class
-        n_samples = int(len(majority_indices) * sampling_ratio)
-        # Use random_state for reproducible choice
-        rng = np.random.default_rng(random_state)
-        oversampled_minority = rng.choice(minority_indices, size=n_samples, replace=True)
-        
-        # Combine oversampled minority and majority
-        selected_indices = np.concatenate([oversampled_minority, majority_indices])
-        np.random.shuffle(selected_indices)
-        
-        # Need special handling for oversampling since we're replicating samples
-        X_resampled = []
-        y_resampled = []
-        
-        for i in selected_indices:
-            # Add copies of minority class or original majority class
-            X_resampled.append(X[i])
-            y_resampled.append(y[i])
-            
-    elif method.lower() == 'smote':
-        start_time = time.time() # Define start_time here
-        try:
-            from imblearn.over_sampling import SMOTE
-            
-            # SMOTE requires a flat feature matrix, so we need to flatten the multimodal data
-            # First, create a flattened representation of X
-            flattened_X = []
-            for sample in X:
-                # Concatenate all modality features
-                flat_sample = []
-                for modality, features in sample.items():
-                    if isinstance(features, np.ndarray):
-                        flat_sample.extend(features.flatten())
-                    else:
-                        # Handle non-array inputs
-                        flat_features = np.array(features).flatten()
-                        flat_sample.extend(flat_features)
-                        
-                flattened_X.append(flat_sample)
-            
-            # Convert to numpy array
-            flattened_X = np.array(flattened_X)
-            
-            # Apply SMOTE with random_state
-            smote = SMOTE(sampling_strategy=sampling_ratio, random_state=random_state) # <<< Use seed
-            X_resampled_flat, y_resampled = smote.fit_resample(flattened_X, y_np)
-            
-            # Need to reconstruct the multimodal structure - this is a limitation
-            # We'll use the nearest original sample as a template for each synthetic sample
-            X_resampled = []
-            
-            for i, flat_sample in enumerate(X_resampled_flat):
-                if i < len(X):  # Original sample
-                    X_resampled.append(X[i])
-                else:  # Synthetic sample
-                    # Find nearest original sample from minority class
-                    diffs = np.linalg.norm(flattened_X[minority_indices] - flat_sample.reshape(1, -1), axis=1)
-                    nearest_idx = minority_indices[np.argmin(diffs)]
-                    
-                    # Use the structure of the nearest sample
-                    template = X[nearest_idx]
-                    synthetic_sample = {}
-                    
-                    # Start and end indices for unpacking the flat vector back
-                    start_idx = 0
-                    for modality, features in template.items():
-                        # Get the shape of this modality
-                        if isinstance(features, np.ndarray):
-                            mod_shape = features.shape
-                            flat_len = np.prod(mod_shape)
-                        else:
-                            mod_shape = np.array(features).shape
-                            flat_len = np.prod(mod_shape)
-                        
-                        # Extract the slice for this modality
-                        mod_flat = flat_sample[start_idx:start_idx + flat_len]
-                        
-                        # Reshape back to original shape
-                        mod_reshaped = mod_flat.reshape(mod_shape)
-                        
-                        # Add to the synthetic sample
-                        synthetic_sample[modality] = mod_reshaped
-                        
-                        # Update start_idx for next modality
-                        start_idx += flat_len
-                    
-                    X_resampled.append(synthetic_sample)
-            
-            logging.info(f"SMOTE balancing took {time.time() - start_time:.2f} seconds.")
-        except (ImportError, Exception) as e:
-            logging.warning(f"SMOTE failed ({e}), falling back to random oversampling")
-            # Fallback to random oversampling
-            return balance_dataset(X, y, method='random_over', sampling_ratio=sampling_ratio, random_state=random_state)
-    else:
-        # Default to no balancing if method not recognized
-        logging.warning(f"Unknown balancing method '{method}'. Using original data.")
-        return X, y
+    # Shuffle the combined indices
+    rng.shuffle(combined_indices)
     
+    # Create new X_dict and y using the selected indices
+    # Check if X_dict is the expected dictionary structure
+    if not isinstance(X_dict, dict):
+        logging.error(f"_balance_indices: Expected X_dict to be a dictionary, but got {type(X_dict)}. Cannot balance.")
+        # Decide how to handle - return original or raise error
+        return X_dict, y_np # Returning original to avoid crashing
+
+    try:
+        # Ensure indices are valid before slicing
+        max_index = max(combined_indices) if len(combined_indices) > 0 else -1
+        valid_indices = True
+        for modality, data_array in X_dict.items():
+            if max_index >= data_array.shape[0]:
+                 logging.error(f"_balance_indices: Index {max_index} out of bounds for modality '{modality}' (shape {data_array.shape}).")
+                 valid_indices = False
+                 break
+        
+        if valid_indices:
+            X_balanced = {modality: data_array[combined_indices] for modality, data_array in X_dict.items()}
+            y_balanced = y_np[combined_indices]
+        else:
+             logging.error("_balance_indices: Invalid indices detected. Returning original data.")
+             return X_dict, y_np # Fallback
+
+    except IndexError as e:
+         logging.error(f"_balance_indices: IndexError during slicing: {e}. Indices: {combined_indices[:10]}..., Max Index: {max_index}")
+         # Log shapes for debugging
+         for mod, data in X_dict.items():
+             logging.error(f"  Shape of {mod}: {data.shape}")
+         logging.error("Returning original data due to slicing error.")
+         return X_dict, y_np # Fallback
+    except Exception as e:
+         logging.error(f"_balance_indices: Unexpected error during slicing: {e}")
+         # Log shapes for debugging
+         for mod, data in X_dict.items():
+             logging.error(f"  Shape of {mod}: {data.shape}")
+         logging.error("Returning original data due to unexpected error.")
+         return X_dict, y_np # Fallback
+
     # Report new class distribution
-    y_resampled_np = np.array(y_resampled)
-    new_counts = np.bincount(y_resampled_np.astype(int))
-    logging.info(f"Balancing: New distribution after {method} - Class 0: {new_counts[0]}, Class 1: {new_counts[1] if len(new_counts) > 1 else 0}")
-    logging.debug(f"balance_dataset: Output y shape: {y_resampled_np.shape}")
+    new_counts = np.bincount(y_balanced.astype(int))
+    logging.info(f"_balance_indices: New distribution after {method} - Class 0: {new_counts[0] if len(new_counts)>0 else 0}, Class 1: {new_counts[1] if len(new_counts)>1 else 0}")
     
-    return X_resampled, y_resampled
+    return X_balanced, y_balanced
+# --- ------------------------------------------------------- ---
+
+def balance_dataset(X, y, method='smote', sampling_ratio=0.5, random_state=None):
+    """
+    Balance the dataset to address class imbalance using various methods.
+    Handles dictionary-based multi-modal input (X).
+    
+    Args:
+        X: Input features (dictionary where keys are modalities and values are numpy arrays
+           [samples, window, features] or similar).
+        y: Target labels (numpy array or list).
+        method: Resampling method - 'smote', 'random_over', 'random_under', or 'none'.
+        sampling_ratio: Target ratio for balancing.
+        random_state: Random seed for reproducible results.
+    
+    Returns:
+        X_resampled, y_resampled: Balanced features (dictionary) and labels (numpy array).
+    """
+    import numpy as np # Ensure numpy is available
+    import logging     # Ensure logging is available
+    
+    # Ensure y is a numpy array
+    y_np = np.array(y)
+    
+    # Check if X is the expected dictionary structure
+    if not isinstance(X, dict):
+        logging.error(f"balance_dataset: Expected X to be a dictionary, but got {type(X)}. Cannot balance.")
+        # Decide how to handle - return original or raise error
+        return X, y_np # Returning original to avoid crashing
+        
+    # Calculate original class distribution for logging
+    unique_classes, counts = np.unique(y_np, return_counts=True)
+    if len(unique_classes) <= 1 or (len(counts) > 1 and counts[0] == counts[1]):
+        logging.info(f"Balancing skipped: Data already balanced or only one class present. Method requested: {method}")
+        return X, y_np # Return original if balanced or single class
+
+    logging.info(f"balance_dataset: Balancing requested with method '{method}'. Original counts: {dict(zip(unique_classes, counts))}")
+    
+    # --- Use the method passed as argument --- #
+    requested_method = method.lower()
+    # --------------------------------------- #
+    
+    if requested_method == 'none':
+        logging.info("No balancing applied as method is 'none'.")
+        return X, y_np
+        
+    elif requested_method in ['random_over', 'random_under']:
+        logging.info(f"Applying index-based balancing: {requested_method}")
+        # Ensure X is the correct type before passing
+        if isinstance(X, dict):
+             # Pass the *requested_method* to the helper
+             return _balance_indices(X, y_np, requested_method, sampling_ratio, random_state)
+        else:
+             # This case should have been caught earlier, but double-check
+             logging.error("balance_dataset: X is not a dictionary, cannot apply index balancing.")
+             return X, y_np
+             
+    elif requested_method == 'smote':
+        # --- SMOTE is complex for this structure, use fallback for now ---
+        logging.warning("SMOTE reconstruction for dictionary input is complex and not fully implemented. "
+                        "Falling back to index-based 'random_over' sampling.")
+        # Ensure X is the correct type before passing
+        if isinstance(X, dict):
+             return _balance_indices(X, y_np, 'random_over', sampling_ratio, random_state)
+        else:
+             logging.error("balance_dataset: X is not a dictionary, cannot apply fallback balancing.")
+             return X, y_np
+        # -----------------------------------------------------------------
+        
+    else:
+        logging.warning(f"Unknown balancing method '{method}'. Returning original data.")
+        return X, y_np
 
 
 def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_dict, y_val_tensor, 
@@ -1795,18 +1810,17 @@ def main():
         if train_X_dict: logging.debug(f"  Train shapes (first sample): {{mod: data.shape for mod, data in train_X_dict.items()}}") # Use train_X_dict
 
         # --- Data Balancing (Applied only to Training Data) --- #
-        if args.balance_method != 'none':
-             logging.info(f"Fold {fold_idx+1} - Balancing training data using {args.balance_method}...")
-             # Balancing needs X as a single array and y. We need to reshape/stack.
-             # This part is complex and needs careful implementation to handle the dictionary structure after balancing.
-             # Placeholder: Assume balancing is complex and use original data for now.
-             logging.warning(f"  [Fold {fold_idx+1}] WARNING: Data balancing reconstruction after SMOTE/etc. with dictionary input is complex and not fully implemented. Using UNBALANCED train_X_dict for actual model training.")
-             X_train_fold = train_X_dict # Use the original sliced training data
-             y_train_fold = train_y     # Use the original sliced training labels
-        else:
-             X_train_fold = train_X_dict
-             y_train_fold = train_y
-        # --- End Data Balancing Placeholder --- #
+        # Pass the sliced training data (train_X_dict, train_y) to the balance_dataset function
+        X_train_fold, y_train_fold = balance_dataset(
+            X=train_X_dict, 
+            y=train_y, 
+            method=args.balance_method, 
+            sampling_ratio=args.sampling_ratio, 
+            random_state=args.seed + fold_idx # Ensure reproducibility per fold
+        )
+        # balance_dataset now handles logging internally, including warnings for SMOTE fallback
+        # The returned X_train_fold and y_train_fold are ready for use.
+        # --- End Data Balancing --- #
 
         # --- Prepare DataLoaders for this fold --- 
         # Check if data is empty before creating dataset/loader
@@ -1856,17 +1870,31 @@ def main():
         # --- MODEL TRAINING / OPTIMIZATION ---
         optimization_history = None  # Initialize history variable
         
-        # Calculate class weights for balanced loss
-        unique, counts = np.unique(train_y, return_counts=True)
-        if len(unique) > 1:
-            class_weights = len(train_y) / (len(unique) * counts)
-            class_weights = class_weights / class_weights.sum() * len(class_weights)
-            logging.info(f"Using class weights: {class_weights}")
-            pos_weight = torch.tensor(class_weights[1] / class_weights[0]).to(device)
+        # --- Class Weight Logic ---
+        if args.class_weight == 'balanced':
+            unique, counts = np.unique(train_y, return_counts=True)
+            if len(unique) > 1:
+                # Calculate balanced weights
+                class_weights = len(train_y) / (len(unique) * counts)
+                # Note: Original script used class_weights[1] / class_weights[0] which corresponds to count(0)/count(1)
+                # This is the standard definition for pos_weight in BCEWithLogitsLoss
+                pos_weight_val = class_weights[1] / class_weights[0]
+                pos_weight = torch.tensor(pos_weight_val, dtype=torch.float32).to(device) # Ensure float32
+                logging.info(f"Fold {fold_idx+1}: Using balanced class weights. Calculated pos_weight: {pos_weight.item():.4f}")
+            else:
+                logging.warning(f"Fold {fold_idx+1}: Only one class present in training data. Cannot balance. Using default pos_weight=1.0.")
+                pos_weight = torch.tensor(1.0, dtype=torch.float32).to(device) # Default weight if only one class
         else:
-            logging.warning(f"Fold {fold_idx+1}: Only one class present in training data. Using equal class weights.")
-            pos_weight = torch.tensor(1.0).to(device)
-        
+            # No class weights requested
+            logging.info(f"Fold {fold_idx+1}: Class weights disabled (args.class_weight != 'balanced'). Using default pos_weight=1.0.")
+            pos_weight = torch.tensor(1.0, dtype=torch.float32).to(device) # Default weight if balancing is off
+
+        # Note: We pass pos_weight directly to the training functions/loss calculations below
+        # The 'criterion' variable might not be explicitly needed here anymore if training loops handle it.
+        # However, we keep it defined for potential future use or clarity.
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight).to(device)
+        # --- End Class Weight Logic ---
+
         # Convert training data to tensors for PyGMO optimization
         train_data_dict = {}
         for mod in X_train_fold.keys():
@@ -1974,7 +2002,8 @@ def main():
                         
                         optimizer.zero_grad()
                         outputs, _ = migraine_fusemoe(batch_X)
-                        loss = weighted_bce_loss(outputs, batch_y, pos_weight=pos_weight) 
+                        # Use the calculated pos_weight (either balanced or 1.0)
+                        loss = weighted_bce_loss(outputs, batch_y, pos_weight=pos_weight)
                         loss.backward()
                         optimizer.step()
                         
@@ -2036,7 +2065,7 @@ def main():
                     num_epochs=num_epochs,
                     batch_size=batch_size,
                     learning_rate=args.learning_rate, # <<< Pass LR arg
-                    pos_weight=pos_weight,
+                    pos_weight=pos_weight, # <<< Pass the calculated pos_weight
                     device=device,
                     patience=patience # <<< Use patience arg
                 )

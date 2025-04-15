@@ -64,70 +64,76 @@ def generate_date_range(start_date, days):
     return [start_date + timedelta(days=i) for i in range(days)]
 
 def generate_eeg_data(patient_ids, date_range, output_dir, migraine_dates):
-    """Generate synthetic EEG data."""
+    """Generate synthetic EEG data with unique timestamps per patient."""
     eeg_dir = os.path.join(output_dir, 'eeg')
     all_patient_data = []
     
-    for patient_id in patient_ids:
+    # Define base frequencies for EEG bands
+    base_freqs = {'alpha': 10, 'beta': 20, 'theta': 6, 'delta': 2, 'gamma': 40}
+    
+    for p_idx, patient_id in enumerate(patient_ids):
         patient_data = []
         
         # Patient-specific baseline to simulate individual differences
-        baseline_alpha = np.random.uniform(8, 12)
-        baseline_beta = np.random.uniform(13, 30)
-        baseline_theta = np.random.uniform(4, 8)
-        baseline_delta = np.random.uniform(0.5, 4)
-        baseline_gamma = np.random.uniform(30, 45)
+        patient_variation = np.random.uniform(0.8, 1.2, size=len(base_freqs))
         
         for date in date_range:
             # Check if date is close to a migraine (prodromal phase)
             date_str = date.strftime('%Y-%m-%d')
+            is_migraine_day = False
             is_prodromal = False
+            
             for migraine_date in migraine_dates.get(patient_id, []):
                 migraine_date_obj = datetime.strptime(migraine_date, '%Y-%m-%d')
                 days_before = (migraine_date_obj - date).days
-                if 0 <= days_before <= 2:  # 0-2 days before migraine
+                if days_before == 0:
+                    is_migraine_day = True
+                    break
+                elif 1 <= days_before <= 2:  # 1-2 days before migraine
                     is_prodromal = True
                     break
             
-            # Generate multiple readings per day
-            for hour in [9, 13, 17, 21]:  # 4 readings per day
-                timestamp = datetime.combine(date, datetime.min.time()) + timedelta(hours=hour)
+            # Generate multiple EEG readings per day (e.g., every 4 hours)
+            for hour in range(0, 24, 4): # Example: every 4 hours
+                # --- Add unique timestamp offset per patient ---
+                # Base timestamp
+                base_timestamp = datetime.combine(date, datetime.min.time()) + timedelta(hours=hour)
+                # Add a small, *random* offset (e.g., milliseconds) to interleave patients
+                offset_ms = np.random.randint(0, 1000) # Random offset 0-999 ms
+                timestamp = base_timestamp + timedelta(milliseconds=offset_ms)
+                # --- ---------------------------------------- ---
                 
-                # Base values with random variation
-                if is_prodromal:
-                    # Changes that might indicate upcoming migraine
-                    alpha = baseline_alpha * np.random.uniform(0.7, 0.9)  # Decreased alpha
-                    beta = baseline_beta * np.random.uniform(1.1, 1.3)    # Increased beta
-                    theta = baseline_theta * np.random.uniform(1.1, 1.2)  # Slight increase in theta
-                    delta = baseline_delta * np.random.uniform(1.0, 1.1)  # Slight increase in delta
-                    gamma = baseline_gamma * np.random.uniform(1.1, 1.4)  # Increased gamma
-                else:
-                    # Normal variation
-                    alpha = baseline_alpha * np.random.uniform(0.9, 1.1)
-                    beta = baseline_beta * np.random.uniform(0.9, 1.1)
-                    theta = baseline_theta * np.random.uniform(0.9, 1.1)
-                    delta = baseline_delta * np.random.uniform(0.9, 1.1)
-                    gamma = baseline_gamma * np.random.uniform(0.9, 1.1)
+                # Simulate EEG band power variations
+                eeg_bands = {}
+                i = 0
+                for band, base_freq in base_freqs.items():
+                    # Apply variations: patient-specific, daily cycle, random noise
+                    daily_cycle = np.sin(np.pi * hour / 24) * 0.1  # Small daily variation
+                    random_noise = np.random.normal(0, 0.05)  # Random noise
+                    
+                    # Modify amplitude based on migraine proximity
+                    migraine_effect = 1.0
+                    if is_migraine_day:
+                        migraine_effect = np.random.uniform(1.1, 1.4) if band in ['theta', 'delta'] else np.random.uniform(0.7, 0.9)
+                    elif is_prodromal:
+                        migraine_effect = np.random.uniform(1.05, 1.2) if band in ['theta', 'delta'] else np.random.uniform(0.8, 0.95)
+                    
+                    band_power = base_freq * patient_variation[i] * (1 + daily_cycle + random_noise) * migraine_effect
+                    eeg_bands[band] = max(0, band_power) # Ensure non-negative
+                    i += 1
                 
-                # Frontal asymmetry - could be indicative of migraine
-                frontal_asymmetry = np.random.uniform(-0.3, 0.3)
-                if is_prodromal:
-                    frontal_asymmetry += np.random.uniform(0.1, 0.4)  # More asymmetry before migraine
-                
-                # Add some noise
-                noise = np.random.uniform(-1, 1, 5)  # 5 frequency bands
+                # Simulate frontal asymmetry (simple random walk)
+                frontal_asymmetry = np.random.normal(0, 0.2) # Baseline around 0
+                if is_migraine_day or is_prodromal:
+                     frontal_asymmetry += np.random.normal(0.3, 0.1) # Shift during migraine phase
                 
                 patient_data.append({
                     'patient_id': patient_id,
-                    'timestamp': timestamp,
-                    'alpha': alpha + noise[0],
-                    'beta': beta + noise[1],
-                    'theta': theta + noise[2],
-                    'delta': delta + noise[3],
-                    'gamma': gamma + noise[4],
+                    'timestamp': timestamp, # Use the unique timestamp
+                    **eeg_bands,
                     'frontal_asymmetry': frontal_asymmetry
                 })
-        
+                
         # Create dataframe and save to CSV
         df = pd.DataFrame(patient_data)
         df.to_csv(os.path.join(eeg_dir, f"{patient_id}_eeg.csv"), index=False)
@@ -429,15 +435,29 @@ def generate_migraine_events(patient_ids, date_range, output_dir, avg_migraine_f
         
         # Generate random migraine dates
         if migraine_count > 0:
-            possible_days = list(range(2, len(date_range)))  # Skip first 2 days to allow for prodromal features
-            # Ensure we don't try to pick more days than are available
-            migraine_days = sorted(np.random.choice(
-                possible_days, 
-                min(migraine_count, len(possible_days)), 
-                replace=False
-            ))
+            migraine_days_indices = []
+            last_migraine_day_idx = -999 # Initialize far in the past
+            min_gap_days = 3 # Minimum days between migraines for a patient
             
-            for day_idx in migraine_days:
+            # Shuffle possible days to avoid bias towards earlier days
+            possible_days = list(range(2, len(date_range)))
+            np.random.shuffle(possible_days)
+            
+            # Select days ensuring minimum gap
+            for day_idx in possible_days:
+                if len(migraine_days_indices) >= migraine_count: # Stop if we have enough
+                    break
+                if day_idx >= last_migraine_day_idx + min_gap_days:
+                    migraine_days_indices.append(day_idx)
+                    last_migraine_day_idx = day_idx
+                    # Sort temporarily to find the most recent for the next check
+                    migraine_days_indices.sort()
+                    last_migraine_day_idx = migraine_days_indices[-1]
+            
+            # Final sort of the selected indices
+            migraine_days_indices.sort()
+
+            for day_idx in migraine_days_indices: # Iterate through selected indices
                 migraine_date = date_range[day_idx]
                 migraine_date_str = migraine_date.strftime('%Y-%m-%d')
                 migraine_dates[patient_id].append(migraine_date_str)
