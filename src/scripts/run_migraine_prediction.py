@@ -465,7 +465,7 @@ def parse_args():
     # >>> ADDED UNCERTAINTY QUANTIFICATION ARGUMENTS <<<
     parser.add_argument('--uncertainty', action='store_true',
                       help='Enable uncertainty quantification with Monte Carlo Dropout')
-    parser.add_argument('--dropout_rate', type=float, default=0.2,
+    parser.add_argument('--dropout_rate', type=float, default=0.25,
                       help='Dropout rate to use for uncertainty quantification')
     parser.add_argument('--mc_samples', type=int, default=20,
                       help='Number of samples to generate with Monte Carlo Dropout')
@@ -1014,6 +1014,104 @@ def _balance_indices(X_dict, y_np, method, sampling_ratio, random_state=None):
     return X_balanced, y_balanced
 # --- ------------------------------------------------------- ---
 
+# --- SMOTE Implementation for Dictionary Inputs (Priority 1 Fix) ---
+def smote_dictionary_data(X_dict, y_np, sampling_ratio=0.6, random_state=None):
+    """SMOTE implementation for dictionary-based multimodal data."""
+    import numpy as np
+    from imblearn.over_sampling import SMOTE
+    import logging
+    
+    logging.info(f"Applying SMOTE for dictionary input with ratio: {sampling_ratio}")
+    
+    # 1. Find minority class indices
+    unique_classes, counts = np.unique(y_np, return_counts=True)
+    if len(unique_classes) <= 1:
+        logging.warning("SMOTE skipped: Only one class present.")
+        return X_dict, y_np
+        
+    minority_class = unique_classes[np.argmin(counts)]
+    majority_class = unique_classes[np.argmax(counts)]
+    minority_indices = np.where(y_np == minority_class)[0]
+    majority_indices = np.where(y_np == majority_class)[0]
+    
+    logging.debug(f"SMOTE: Minority class {minority_class} ({len(minority_indices)} samples), Majority class {majority_class} ({len(majority_indices)} samples)")
+
+    # 2. Concatenate all features for SMOTE
+    all_features = []
+    feature_dims = {}
+    current_pos = 0
+    ordered_modalities = sorted(X_dict.keys()) # Ensure consistent order
+    
+    # First pass: Calculate dimensions and check shapes
+    num_samples = len(y_np)
+    expected_sample_count = X_dict[ordered_modalities[0]].shape[0] if ordered_modalities else 0
+    if num_samples != expected_sample_count:
+         logging.error(f"SMOTE Error: Sample count mismatch! y has {num_samples}, but first modality has {expected_sample_count}. Aborting SMOTE.")
+         return X_dict, y_np # Return original data
+         
+    for mod in ordered_modalities:
+        data = X_dict[mod]
+        if data.shape[0] != num_samples:
+             logging.error(f"SMOTE Error: Sample count mismatch in modality '{mod}'. Expected {num_samples}, got {data.shape[0]}. Aborting SMOTE.")
+             return X_dict, y_np # Return original data
+             
+        orig_shape = data.shape[1:]  # Window, features
+        flat_size = np.prod(orig_shape)
+        feature_dims[mod] = (current_pos, current_pos + flat_size, orig_shape)
+        current_pos += flat_size
+        
+    total_flat_features = current_pos
+    logging.debug(f"SMOTE: Total flattened features per sample: {total_flat_features}")
+    
+    # Second pass: Concatenate
+    all_features = np.zeros((num_samples, total_flat_features), dtype=np.float32) # Pre-allocate
+    for i in range(num_samples):
+        current_col = 0
+        for mod in ordered_modalities:
+            start_idx, end_idx, _ = feature_dims[mod]
+            all_features[i, start_idx:end_idx] = X_dict[mod][i].flatten()
+
+    logging.debug(f"SMOTE: Concatenated feature array shape: {all_features.shape}")
+
+    # 3. Apply SMOTE to concatenated features
+    try:
+        # Adjust sampling_strategy for imblearn > 0.10 compatibility if needed
+        # For now, assume older style or float ratio works
+        smote = SMOTE(sampling_strategy=sampling_ratio, random_state=random_state)
+        X_resampled, y_resampled = smote.fit_resample(all_features, y_np)
+        logging.info(f"SMOTE: Resampled data shape: {X_resampled.shape}, Resampled labels shape: {y_resampled.shape}")
+        # Log new class distribution
+        new_counts = np.bincount(y_resampled.astype(int))
+        logging.info(f"SMOTE: New distribution - Class 0: {new_counts[0] if len(new_counts)>0 else 0}, Class 1: {new_counts[1] if len(new_counts)>1 else 0}")
+
+    except ValueError as e:
+        logging.error(f"SMOTE Error during fit_resample: {e}")
+        logging.error("This might happen if the minority class size is too small for the number of neighbors (k_neighbors). Try reducing sampling_ratio or checking data.")
+        return X_dict, y_np # Return original data on SMOTE error
+    except Exception as e:
+        logging.error(f"Unexpected error during SMOTE: {e}")
+        return X_dict, y_np
+
+    # 4. Split back into dictionary structure
+    num_new_samples = len(y_resampled)
+    new_X_dict = {}
+    
+    # Reconstruct dictionary structure using calculated feature_dims
+    for mod in ordered_modalities:
+        start_idx, end_idx, orig_shape = feature_dims[mod]
+        mod_features = X_resampled[:, start_idx:end_idx]
+        # Reshape back to original dimensions (samples, window, features)
+        try:
+            new_X_dict[mod] = mod_features.reshape((num_new_samples,) + orig_shape)
+        except ValueError as reshape_error:
+             logging.error(f"SMOTE Error: Cannot reshape modality '{mod}' from {mod_features.shape} to {(num_new_samples,) + orig_shape}. Error: {reshape_error}")
+             return X_dict, y_np # Return original if reshape fails
+             
+    logging.debug(f"SMOTE: Successfully reconstructed dictionary with {len(new_X_dict)} modalities.")
+    
+    return new_X_dict, y_resampled
+# --- ------------------------------------------------------------ ---
+
 def balance_dataset(X, y, method='smote', sampling_ratio=0.5, random_state=None):
     """
     Balance the dataset to address class imbalance using various methods.
@@ -1060,26 +1158,21 @@ def balance_dataset(X, y, method='smote', sampling_ratio=0.5, random_state=None)
         
     elif requested_method in ['random_over', 'random_under']:
         logging.info(f"Applying index-based balancing: {requested_method}")
-        # Ensure X is the correct type before passing
         if isinstance(X, dict):
-             # Pass the *requested_method* to the helper
              return _balance_indices(X, y_np, requested_method, sampling_ratio, random_state)
         else:
-             # This case should have been caught earlier, but double-check
              logging.error("balance_dataset: X is not a dictionary, cannot apply index balancing.")
              return X, y_np
              
     elif requested_method == 'smote':
-        # --- SMOTE is complex for this structure, use fallback for now ---
-        logging.warning("SMOTE reconstruction for dictionary input is complex and not fully implemented. "
-                        "Falling back to index-based 'random_over' sampling.")
-        # Ensure X is the correct type before passing
+        # --- Use the new SMOTE function for dictionary inputs --- 
+        logging.info("Applying SMOTE for dictionary input structure...")
         if isinstance(X, dict):
-             return _balance_indices(X, y_np, 'random_over', sampling_ratio, random_state)
+            return smote_dictionary_data(X, y_np, sampling_ratio, random_state)
         else:
-             logging.error("balance_dataset: X is not a dictionary, cannot apply fallback balancing.")
-             return X, y_np
-        # -----------------------------------------------------------------
+            logging.error("balance_dataset: X is not a dictionary, cannot apply SMOTE.")
+            return X, y_np
+        # -----------------------------------------------------------
         
     else:
         logging.warning(f"Unknown balancing method '{method}'. Returning original data.")
@@ -1109,10 +1202,17 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
         training_history: Dictionary with training history
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # <<< Use LR arg
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
-                                                           patience=patience//2, # Reduce LR if no improvement for half the early stopping patience
-                                                           factor=0.1, 
-                                                           verbose=False) # Quieten scheduler verbosity
+    # --- Replace ReduceLROnPlateau with CosineAnnealingLR --- #
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
+    #                                                        patience=patience//2, # Reduce LR if no improvement for half the early stopping patience
+    #                                                        factor=0.1, 
+    #                                                        verbose=False) # Quieten scheduler verbosity
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=num_epochs,      # Number of iterations for the first restart
+        eta_min=learning_rate * 0.01 # Minimum learning rate
+    )
+    # --- --------------------------------------------- ---
     
     # Initialize best validation loss and patience counter
     best_val_loss = float('inf')
@@ -1155,6 +1255,9 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
             outputs, _ = model(batch_X)
             loss = weighted_bce_loss(outputs, batch_y, pos_weight=pos_weight)
             loss.backward()
+            # --- Add Gradient Clipping --- #
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # --- --------------------- --- #
             optimizer.step()
             
             epoch_loss += loss.item() * batch_y.shape[0]
@@ -1784,9 +1887,15 @@ def main():
     # --- -------------------------------------- ---
 
     # Loop through cross-validation folds
-    for fold_idx, (train_indices, test_indices) in enumerate(cv_splits):
+    # --- Wrap the CV loop with tqdm ---
+    cv_pbar = tqdm(enumerate(cv_splits), total=len(cv_splits), desc="Cross-Validation Folds", leave=True)
+    for fold_idx, (train_indices, test_indices) in cv_pbar:
+    # --- --------------------------- ---
         logging.info(f"===== Starting Fold {fold_idx + 1}/{len(cv_splits)} =====")
         fold_start_time = time.time()
+        
+        # Update CV progress bar description
+        cv_pbar.set_description(f"CV Fold {fold_idx+1}/{len(cv_splits)}")
 
         # --- Correctly Slice Data for the Fold --- #
         # Slice the target labels and groups directly
@@ -1852,36 +1961,94 @@ def main():
         if len(test_y) > 0: logging.info(f"  Test target distribution: {np.bincount(test_y)} (Positive rate: {np.mean(test_y):.2%})")
         if train_X_dict: logging.debug(f"  Train shapes (first sample): {{mod: data.shape for mod, data in train_X_dict.items()}}") # Use train_X_dict
 
-        # --- Data Balancing (Applied only to Training Data) --- #
-        # Pass the sliced training data (train_X_dict, train_y) to the balance_dataset function
-        X_train_fold, y_train_fold = balance_dataset(
-            X=train_X_dict, 
-            y=train_y, 
-            method=args.balance_method, 
-            sampling_ratio=args.sampling_ratio, 
+        # --- Apply StandardScaler (Fit on Train, Transform Train & Test) ---
+        scalers = {}
+        X_train_fold_scaled = {}
+        X_test_fold_scaled = {}
+        logging.info(f"Fold {fold_idx+1} - Applying StandardScaler...")
+        for mod, data in train_X_dict.items():
+            scaler = StandardScaler()
+            if data.ndim != 3 or data.shape[0] == 0:
+                 logging.warning(f"  Skipping scaling for modality '{mod}': Invalid shape {data.shape}")
+                 X_train_fold_scaled[mod] = data # Use original data if invalid
+                 # Ensure corresponding test data is also handled
+                 if mod in test_X_dict:
+                     X_test_fold_scaled[mod] = test_X_dict[mod]
+                 continue # Skip to next modality
+
+            n_samples_train, n_timesteps_train, n_features_train = data.shape
+            if n_features_train == 0:
+                logging.warning(f"  Skipping scaling for modality '{mod}': 0 features.")
+                X_train_fold_scaled[mod] = data
+                if mod in test_X_dict:
+                    X_test_fold_scaled[mod] = test_X_dict[mod]
+                continue
+            # Reshape to 2D for scaler: [samples * timesteps, features]
+            data_reshaped_train = data.reshape(-1, n_features_train)
+            # Fit scaler on the training data ONLY
+            scaler.fit(data_reshaped_train)
+            # Transform training data
+            scaled_data_train = scaler.transform(data_reshaped_train)
+            # Reshape back to 3D
+            X_train_fold_scaled[mod] = scaled_data_train.reshape(n_samples_train, n_timesteps_train, n_features_train)
+            scalers[mod] = scaler # Store the scaler for this modality
+            logging.debug(f"  Scaled train data for modality '{mod}': shape={X_train_fold_scaled[mod].shape}")
+
+            # Transform test data using the SAME scaler fitted on train data
+            test_data = test_X_dict.get(mod)
+            if test_data is not None:
+                if test_data.ndim != 3 or test_data.shape[0] == 0:
+                    logging.warning(f"  Skipping test scaling for modality '{mod}': Invalid shape {test_data.shape}")
+                    X_test_fold_scaled[mod] = test_data # Use original test data
+                    continue
+                n_samples_test, n_timesteps_test, n_features_test = test_data.shape
+                if n_features_test == 0:
+                     logging.warning(f"  Skipping test scaling for modality '{mod}': 0 features.")
+                     X_test_fold_scaled[mod] = test_data
+                     continue
+                if n_features_test != n_features_train:
+                    logging.error(f"  Feature mismatch between train ({n_features_train}) and test ({n_features_test}) for modality '{mod}'. Skipping test scaling.")
+                    X_test_fold_scaled[mod] = test_data # Use original if scaling fails
+                    continue
+                data_reshaped_test = test_data.reshape(-1, n_features_test)
+                scaled_data_test = scaler.transform(data_reshaped_test)
+                X_test_fold_scaled[mod] = scaled_data_test.reshape(n_samples_test, n_timesteps_test, n_features_test)
+                logging.debug(f"  Scaled test data for modality '{mod}': shape={X_test_fold_scaled[mod].shape}")
+            else:
+                logging.warning(f"  Modality '{mod}' not found in test set for scaling.")
+                # Handle case where modality exists in train but not test - X_test_fold_scaled[mod] remains unset
+        # --- End StandardScaler ---
+
+        # --- Data Balancing (Applied only to Scaled Training Data) --- #
+        X_train_fold_balanced, y_train_fold_balanced = balance_dataset(
+            X=X_train_fold_scaled, # <<< Use scaled training data
+            y=train_y,
+            method=args.balance_method,
+            sampling_ratio=args.sampling_ratio,
             random_state=args.seed + fold_idx # Ensure reproducibility per fold
         )
-        # balance_dataset now handles logging internally, including warnings for SMOTE fallback
-        # The returned X_train_fold and y_train_fold are ready for use.
+        # Use X_train_fold_balanced and y_train_fold_balanced for dataset creation
+        # Test data remains X_test_fold_scaled
         # --- End Data Balancing --- #
 
-        # --- Prepare DataLoaders for this fold --- 
+        # --- Prepare DataLoaders for this fold using SCALED and BALANCED data ---
         # Check if data is empty before creating dataset/loader
-        if not X_train_fold or len(y_train_fold) == 0:
-            logging.error(f"Fold {fold_idx+1}: Training data is empty after slicing/balancing. Skipping fold.")
+        if not X_train_fold_balanced or len(y_train_fold_balanced) == 0:
+            logging.error(f"Fold {fold_idx+1}: Training data is empty after slicing/scaling/balancing. Skipping fold.")
             continue
-        if not test_X_dict or len(test_y) == 0:
-            logging.error(f"Fold {fold_idx+1}: Test data is empty after slicing. Skipping fold.")
+        if not X_test_fold_scaled or len(test_y) == 0: # <<< Use scaled test data dict
+            logging.error(f"Fold {fold_idx+1}: Test data is empty after slicing/scaling. Skipping fold.")
             continue
 
         # Create DataLoaders using the dictionaries
         try:
-            train_dataset = ModalityDataset(X_train_fold, y_train_fold)
-            test_dataset = ModalityDataset(test_X_dict, test_y) # Use test_X_dict
+            # Use the BALANCED training data and SCALED test data
+            train_dataset = ModalityDataset(X_train_fold_balanced, y_train_fold_balanced)
+            test_dataset = ModalityDataset(X_test_fold_scaled, test_y) # <<< Use scaled test data
         except Exception as e:
             logging.error(f"Fold {fold_idx+1}: Error creating ModalityDataset: {e}")
-            logging.error(f"  Train X keys: {list(X_train_fold.keys())}, Train y len: {len(y_train_fold)}")
-            logging.error(f"  Test X keys: {list(test_X_dict.keys())}, Test y len: {len(test_y)}")
+            logging.error(f"  Train X keys: {list(X_train_fold_balanced.keys())}, Train y len: {len(y_train_fold_balanced)}")
+            logging.error(f"  Test X keys: {list(X_test_fold_scaled.keys())}, Test y len: {len(test_y)}") # <<< Use scaled test keys
             continue # Skip fold if dataset creation fails
 
         # Use dev mode batch size if applicable
@@ -1940,9 +2107,9 @@ def main():
 
         # Convert training data to tensors for PyGMO optimization
         train_data_dict = {}
-        for mod in X_train_fold.keys():
-            train_data_dict[mod] = torch.tensor(X_train_fold[mod], dtype=torch.float32).to(device)
-        y_train_tensor = torch.tensor(y_train_fold, dtype=torch.float32).unsqueeze(1).to(device)
+        for mod in X_train_fold_balanced.keys(): # <<< Use balanced train keys
+            train_data_dict[mod] = torch.tensor(X_train_fold_balanced[mod], dtype=torch.float32).to(device)
+        y_train_tensor = torch.tensor(y_train_fold_balanced, dtype=torch.float32).unsqueeze(1).to(device) # <<< Use balanced train labels
         
         if args.use_pygmo:
             logging.info(f"Fold {fold_idx+1} - Optimizing model architecture and routing using PyGMO...")
@@ -2068,35 +2235,35 @@ def main():
             
             # Create a validation set for early stopping
             # Calculate validation size based on the length of the actual training data for the fold
-            val_size = int(validation_split_size * len(y_train_fold)) # Use length of labels (consistent with features)
+            val_size = int(validation_split_size * len(y_train_fold_balanced)) # <<< Use length of balanced labels
             
-            if val_size > 1 and len(y_train_fold) - val_size > 1: # Ensure train/val sets are non-empty
+            if val_size > 1 and len(y_train_fold_balanced) - val_size > 1: # <<< Use length of balanced labels
                 # Create a stratified validation split from training data
-                train_val_indices = np.arange(len(y_train_fold))
+                train_val_indices = np.arange(len(y_train_fold_balanced)) # <<< Use range of balanced labels
                 train_indices_subset, val_indices_subset = train_test_split(
-                    train_val_indices, test_size=val_size, 
-                    stratify=y_train_fold if len(np.unique(y_train_fold)) > 1 else None,
+                    train_val_indices, test_size=val_size,
+                    stratify=y_train_fold_balanced if len(np.unique(y_train_fold_balanced)) > 1 else None, # <<< Stratify by balanced labels
                     random_state=args.seed # <<< Use seed
                 )
-                
-                # Create validation dict by slicing X_train_fold dictionary
-                val_X_dict = {mod: data[val_indices_subset] for mod, data in X_train_fold.items()}
-                val_y = y_train_fold[val_indices_subset]
-                
+
+                # Create validation dict by slicing X_train_fold_balanced dictionary
+                val_X_dict = {mod: data[val_indices_subset] for mod, data in X_train_fold_balanced.items()} # <<< Slice balanced data
+                val_y = y_train_fold_balanced[val_indices_subset] # <<< Slice balanced labels
+
                 # Create training subset dict similarly
-                train_X_subset_dict = {mod: data[train_indices_subset] for mod, data in X_train_fold.items()}
-                train_y_subset = y_train_fold[train_indices_subset]
-                
+                train_X_subset_dict = {mod: data[train_indices_subset] for mod, data in X_train_fold_balanced.items()} # <<< Slice balanced data
+                train_y_subset = y_train_fold_balanced[train_indices_subset] # <<< Slice balanced labels
+
                 # Prepare validation tensors
-                val_data_dict = {mod: torch.tensor(data_array, dtype=torch.float32).to(device) 
+                val_data_dict = {mod: torch.tensor(data_array, dtype=torch.float32).to(device)
                                  for mod, data_array in val_X_dict.items()}
                 val_y_tensor = torch.tensor(val_y, dtype=torch.float32).unsqueeze(1).to(device)
-                
+
                 # Recreate train data dict with subset tensors
-                train_subset_dict_tensors = {mod: torch.tensor(data_array, dtype=torch.float32).to(device) 
+                train_subset_dict_tensors = {mod: torch.tensor(data_array, dtype=torch.float32).to(device)
                                            for mod, data_array in train_X_subset_dict.items()}
                 train_y_subset_tensor = torch.tensor(train_y_subset, dtype=torch.float32).unsqueeze(1).to(device)
-                
+
                 # Use early stopping
                 logging.info(f"  Training with early stopping (patience={patience}, max epochs={num_epochs}) using subset data")
                 migraine_fusemoe, training_history = train_with_early_stopping(
@@ -2115,15 +2282,15 @@ def main():
                 logging.info(f"Fold {fold_idx+1} - Training complete with early stopping.")
             else:
                 # If dataset is too small for validation split, use standard training on full fold data
-                logging.warning(f"Fold {fold_idx+1}: Dataset too small for validation split ({len(y_train_fold)} samples). Training on full fold data for {num_epochs} epochs.")
-                
+                logging.warning(f"Fold {fold_idx+1}: Dataset too small for validation split ({len(y_train_fold_balanced)} samples). Training on full fold data for {num_epochs} epochs.") # <<< Use length of balanced labels
+
                 optimizer = torch.optim.Adam(migraine_fusemoe.parameters(), lr=args.learning_rate)
                 migraine_fusemoe.train() # Set model to training mode
-                # Use train_data_dict and y_train_tensor (already created tensors for PyGMO fallback)
+                # Use train_data_dict and y_train_tensor (already created tensors for PyGMO fallback - these ARE the balanced ones)
                 for epoch in range(num_epochs):
                     epoch_loss = 0
                     # Simple loop without dataloader needed here as data is already tensors
-                    # Note: This uses the full fold data, not a subset
+                    # Note: This uses the full fold balanced data, not a subset
                     for i in range(0, y_train_tensor.shape[0], batch_size):
                         batch_X = {mod: tensor[i:i+batch_size] for mod, tensor in train_data_dict.items()}
                         batch_y = y_train_tensor[i:i+batch_size]
@@ -2156,7 +2323,7 @@ def main():
         
         results, probs, raw_outputs, y_true = evaluate_model(
             model, 
-            test_X_dict, # Correct variable holding the test data features dictionary for the fold
+            X_test_fold_scaled, # <<< Use SCALED test data for evaluation
             y_test_tensor,
             device,
             threshold=0.5,
@@ -2168,29 +2335,33 @@ def main():
         logging.debug(f"Fold {fold_idx+1} - Getting probabilities for training data (for calibration)...")
         model.eval()
         with torch.no_grad():
-            # Need the training data dictionary with tensors
-            train_data_dict_eval = {mod: torch.tensor(data_array, dtype=torch.float32).to(device) 
-                                    for mod, data_array in X_train_fold.items()} 
+            # Need the BALANCED training data dictionary with tensors for calibration
+            train_data_dict_eval = {mod: torch.tensor(data_array, dtype=torch.float32).to(device)
+                                    for mod, data_array in X_train_fold_balanced.items()} # <<< Use balanced data
+            # We also need the corresponding labels for the balanced data
+            train_y_balanced_tensor = torch.tensor(y_train_fold_balanced, dtype=torch.float32).unsqueeze(1).to(device) # <<< Use balanced labels
+
             train_outputs, _ = model(train_data_dict_eval)
             train_probs = torch.sigmoid(train_outputs).cpu().numpy()
-            train_y_true = y_train_tensor.cpu().numpy() # y_train_tensor is already on device
-        
+            train_y_true_balanced = train_y_balanced_tensor.cpu().numpy() # Use balanced labels
+
         # Calibrate probabilities if not in dev mode, or if specifically requested
         if not args.dev_mode or not args.skip_visualizations:
             logging.info(f"Fold {fold_idx+1} - Calibrating prediction probabilities...")
-            calibrated_probs = calibrate_probabilities(train_y_true, train_probs, probs, calibration_method='isotonic')
-            platt_probs = calibrate_probabilities(train_y_true, train_probs, probs, calibration_method='platt')
-            
-            # Recalculate metrics with calibrated probabilities
+            # Use the BALANCED train labels and probs for calibration fitting
+            calibrated_probs = calibrate_probabilities(train_y_true_balanced, train_probs, probs, calibration_method='isotonic')
+            platt_probs = calibrate_probabilities(train_y_true_balanced, train_probs, probs, calibration_method='platt')
+
+            # Recalculate metrics with calibrated probabilities (using the original TRUE test labels)
             calibrated_predicted = (calibrated_probs > 0.5).astype(int)
             try:
-                calibrated_auc = roc_auc_score(y_true, calibrated_probs)
-                calibrated_pr_auc = average_precision_score(y_true, calibrated_probs)
-                
+                calibrated_auc = roc_auc_score(y_true, calibrated_probs) # y_true are the ORIGINAL test labels
+                calibrated_pr_auc = average_precision_score(y_true, calibrated_probs) # y_true are the ORIGINAL test labels
+
                 # Store calibrated metrics
                 results['calibrated_auc'] = calibrated_auc
                 results['calibrated_pr_auc'] = calibrated_pr_auc
-                results['platt_auc'] = roc_auc_score(y_true, platt_probs) if not np.isnan(platt_probs).any() else float('nan')
+                results['platt_auc'] = roc_auc_score(y_true, platt_probs) if not np.isnan(platt_probs).any() else float('nan') # y_true are the ORIGINAL test labels
             except Exception as e:
                 logging.warning(f"Fold {fold_idx+1}: Could not compute AUC for calibrated probabilities: {e}")
         
