@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta
 import glob
 import logging
+import re
+from tqdm.auto import tqdm # Import tqdm
 
 # Import processors
 from .eeg_processor import EEGProcessor
@@ -14,6 +16,35 @@ from .sleep_processor import SleepProcessor
 from .stress_processor import StressProcessor
 from ..advanced_imputation import BaseImputer, KNNImputer, IterativeImputerWrapper, AutoencoderImputer
 
+# Add logging configuration if not already present globally
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Helper function for imputation (can be expanded later) ---
+def get_imputer(method: Optional[str], config: Optional[Dict[str, Any]] = None) -> Optional[BaseImputer]:
+    """
+    Get an imputer instance based on the method name.
+    Currently only returns advanced imputers if requested,
+    otherwise returns None (indicating basic ffill should be used).
+    """
+    config = config or {}
+    if method is None or method.lower() == 'none' or method.lower() == 'ffill':
+        return None # Signal to use basic ffill/fillna
+    elif method.lower() == 'knn':
+        # We'll re-enable this later once the structure is stable
+        # return KNNImputer(**config.get('knn', {}))
+        logging.warning("Advanced imputation (KNN) is temporarily disabled. Using basic ffill/fillna.")
+        return None
+    elif method.lower() == 'iterative':
+        # return IterativeImputerWrapper(**config.get('iterative', {}))
+        logging.warning("Advanced imputation (Iterative) is temporarily disabled. Using basic ffill/fillna.")
+        return None
+    elif method.lower() == 'autoencoder':
+        # return AutoencoderImputer(**config.get('autoencoder', {}))
+        logging.warning("Advanced imputation (Autoencoder) is temporarily disabled. Using basic ffill/fillna.")
+        return None
+    else:
+        logging.warning(f"Unsupported imputation method: {method}. Falling back to basic ffill/fillna.")
+        return None
 
 class MigraineDataPipeline:
     """
@@ -60,6 +91,59 @@ class MigraineDataPipeline:
         self.stress_data = None
         self.migraine_events = None
         self.aligned_data = None
+        self.global_start_time = None # Add attributes to store global time range
+        self.global_end_time = None
+    
+    def _load_raw_data(self, modality: str) -> pd.DataFrame:
+        """
+        Loads the raw combined CSV for a given modality.
+        Handles potential errors during loading and basic timestamp parsing.
+        """
+        file_path = os.path.join(self.data_dir, modality, f"all_{modality}_data.csv")
+        if not os.path.exists(file_path):
+            logging.warning(f"Raw data file not found for {modality}: {file_path}")
+            return pd.DataFrame()
+        try:
+            df = pd.read_csv(file_path)
+            logging.info(f"Loaded raw {modality} data from {file_path} ({len(df)} rows)")
+
+            # --- Standardize Timestamp Column Name --- #
+            timestamp_col = None
+            
+            # --- Special handling for sleep data --- #
+            if modality == 'sleep' and 'sleep_start' in df.columns:
+                logging.debug(f"Found 'sleep_start' column in {modality} data. Renaming to 'timestamp'.")
+                df = df.rename(columns={'sleep_start': 'timestamp'})
+            # --- End special handling --- #
+                
+            if 'timestamp' in df.columns:
+                timestamp_col = 'timestamp'
+            elif 'start_time' in df.columns: # Handle different naming conventions
+                timestamp_col = 'start_time'
+                df = df.rename(columns={'start_time': 'timestamp'})
+            elif 'date' in df.columns and 'hour' in df.columns:
+                # Synthesize timestamp if only date/hour exist
+                df['timestamp'] = pd.to_datetime(df['date'], errors='coerce') + pd.to_timedelta(df['hour'], unit='h', errors='coerce')
+                timestamp_col = 'timestamp'
+            else:
+                logging.warning(f"Could not find a standard timestamp column ('timestamp', 'start_time', or 'date'/'hour') in raw {modality} data.")
+                return pd.DataFrame() # Cannot proceed without time
+
+            # Convert the identified timestamp column to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.dropna(subset=['timestamp']) # Drop rows where timestamp parsing failed
+
+            # Ensure patient_id is of a consistent type (string) if it exists
+            if 'patient_id' in df.columns:
+                df['patient_id'] = df['patient_id'].astype(str)
+            elif modality not in ['weather']: # Weather is expected not to have patient_id
+                 logging.warning(f"'patient_id' column missing in non-weather modality: {modality}")
+
+            return df
+
+        except Exception as e:
+            logging.error(f"Error loading or performing initial processing on raw {modality} data from {file_path}: {e}")
+            return pd.DataFrame()
     
     def load_migraine_events(self, file_path: Optional[str] = None) -> List[Dict]:
         """
@@ -93,6 +177,13 @@ class MigraineDataPipeline:
             try:
                 # Load from CSV
                 events_df = pd.read_csv(file)
+                # Add patient_id from filename if not present
+                if 'patient_id' not in events_df.columns:
+                    patient_id_match = re.search(r"P(\d+)", os.path.basename(file)) # Adjust regex if needed
+                    if patient_id_match:
+                        events_df['patient_id'] = f"P{patient_id_match.group(1)}"
+                    else:
+                        logging.warning(f"Could not extract patient_id from filename {file}. Migraine events from this file might not be correctly mapped.")
                 # Convert DataFrame rows to list of dictionaries
                 events = events_df.to_dict('records')
             
@@ -110,7 +201,12 @@ class MigraineDataPipeline:
                             
                             # Ensure start_time is a valid timestamp after potential parsing
                             if isinstance(event['start_time'], pd.Timestamp) and pd.notna(event['start_time']):
-                                all_events.append(event) # Append valid event
+                                # Ensure patient_id is str
+                                if 'patient_id' in event and event['patient_id'] is not None:
+                                    event['patient_id'] = str(event['patient_id'])
+                                    all_events.append(event) # Append valid event
+                                else:
+                                    print(f"Warning: Skipping event with missing or invalid patient_id in {file}: {event}")
                             else:
                                 print(f"Warning: Skipping event with invalid start_time type or NaT after parsing in {file}: {event}")
                         else:
@@ -128,26 +224,28 @@ class MigraineDataPipeline:
         except TypeError as sort_e:
             print(f"Warning: Could not sort events by start_time due to type error: {sort_e}. Events may be out of order.")
 
-        # --- Deduplicate events based on start_time (Refactored) --- #
+        # --- Deduplicate events based on start_time AND patient_id --- #
         deduplicated_events = []
-        seen_start_times = set()
-        print("Deduplicating events based on start_time...") 
+        seen_patient_start_times = set()
+        print("Deduplicating events based on patient_id and start_time...")
         for event in all_events: # Iterate through already validated and sorted events
-            start_time = event.get('start_time') 
+            start_time = event.get('start_time')
+            patient_id = event.get('patient_id') # Already ensured it exists and is str
+            
             # We know start_time is a valid Timestamp here due to filtering above
-            if start_time not in seen_start_times:
+            event_key = (patient_id, start_time)
+            if event_key not in seen_patient_start_times:
                 deduplicated_events.append(event)
-                seen_start_times.add(start_time)
+                seen_patient_start_times.add(event_key)
             # else: # Implicitly skip duplicates
-                # print(f"DEBUG: Skipping duplicate event with start_time {start_time}")
-        # No need to handle invalid start_times here anymore
+                # print(f"DEBUG: Skipping duplicate event with key {event_key}")
         
         num_removed = len(all_events) - len(deduplicated_events)
         if num_removed > 0:
-            print(f"Removed {num_removed} duplicate events based on start_time.")
+            print(f"Removed {num_removed} duplicate events based on patient_id and start_time.")
             
         self.migraine_events = deduplicated_events
-        print(f"Loaded a total of {len(self.migraine_events)} unique migraine events.")
+        print(f"Loaded a total of {len(self.migraine_events)} unique patient-specific migraine events.")
         return self.migraine_events
     
     def process_eeg_data(self, file_pattern: str = "eeg_*.npy") -> pd.DataFrame:
@@ -301,361 +399,379 @@ class MigraineDataPipeline:
     
     def align_data_with_migraine_events(self) -> Dict[str, pd.DataFrame]:
         """
-        Align all modalities with migraine events.
+        Aligns processed data modalities with migraine events.
         
-        Returns:
-            Dictionary of aligned DataFrames for each modality
+        Note: This method might be less relevant with the new 'create_multimodal_dataset'
+              approach which handles alignment internally. Keeping for potential legacy use.
         """
-        if self.migraine_events is None or len(self.migraine_events) == 0:
-            print("Warning: No migraine events available for alignment")
+        if self.migraine_events is None:
+            self.load_migraine_events()
+
+        if not self.migraine_events:
+            print("No migraine events loaded, cannot align data.")
             return {}
         
-        aligned_dfs = {}
+        # Convert migraine events list to DataFrame for easier merging
+        events_df = pd.DataFrame(self.migraine_events)
+        if 'start_time' not in events_df.columns:
+             print("Warning: Migraine events list does not contain 'start_time'. Cannot align.")
+             return {}
+        events_df['start_time'] = pd.to_datetime(events_df['start_time'])
+        events_df = events_df.sort_values('start_time')
         
-        # Align weather data
-        if self.weather_data is not None and not self.weather_data.empty:
-            aligned_weather = self.weather_connector.align_weather_with_migraine_events(
-                self.weather_data, self.migraine_events)
-            aligned_dfs['weather'] = aligned_weather
+        aligned_modalities = {}
         
-        # Align sleep data
-        if self.sleep_data is not None and not self.sleep_data.empty:
-            aligned_sleep = self.sleep_processor.align_sleep_with_migraine_events(
-                self.sleep_data, self.migraine_events)
-            aligned_dfs['sleep'] = aligned_sleep
+        # Example: Align EEG data
+        # Assuming self.eeg_data is a DataFrame with a 'timestamp' column
+        if self.eeg_data is not None and 'timestamp' in self.eeg_data.columns:
+            eeg_data_sorted = self.eeg_data.sort_values('timestamp')
+            # Use merge_asof to find the nearest EEG reading before each migraine event
+            aligned_modalities['eeg'] = pd.merge_asof(
+                events_df,
+                eeg_data_sorted,
+                left_on='start_time',
+                right_on='timestamp',
+                direction='backward', # Find last reading *before* or at the event time
+                tolerance=pd.Timedelta('1 hour') # Example tolerance
+            )
+            # Rename merged timestamp to avoid confusion
+            aligned_modalities['eeg'] = aligned_modalities['eeg'].rename(columns={'timestamp': 'eeg_timestamp'})
         
-        # Align stress data
-        if self.stress_data is not None and not self.stress_data.empty:
-            aligned_stress = self.stress_processor.align_stress_with_migraine_events(
-                self.stress_data, self.migraine_events)
-            aligned_dfs['stress'] = aligned_stress
-        
-        # Align EEG data
-        if self.eeg_data is not None and not self.eeg_data.empty:
-            # Convert EEG timestamp to datetime if needed
-            if 'start_time' in self.eeg_data.columns:
-                # Create hours to next migraine column
-                self.eeg_data['hours_to_next_migraine'] = np.inf
-                self.eeg_data['next_migraine_severity'] = None
-                
-                for idx, row in self.eeg_data.iterrows():
-                    eeg_time = row['start_time']
-                    
-                    # Find the next migraine event after this EEG record
-                    next_events = [e for e in self.migraine_events if e['start_time'] > eeg_time]
-                    
-                    if next_events:
-                        next_event = next_events[0]
-                        time_diff = next_event['start_time'] - eeg_time
-                        self.eeg_data.at[idx, 'hours_to_next_migraine'] = time_diff.total_seconds() / 3600
-                        self.eeg_data.at[idx, 'next_migraine_severity'] = next_event['severity']
-                
-                # Create binary label for prediction (migraine within next 24 hours)
-                self.eeg_data['migraine_within_24h'] = self.eeg_data['hours_to_next_migraine'] <= 24
-                aligned_dfs['eeg'] = self.eeg_data
-        
-        self.aligned_data = aligned_dfs
-        return aligned_dfs
-    
-    def create_multimodal_dataset(self, time_window: str = '1H', 
-                                prediction_horizon: int = 6,
-                                imputation_method: Optional[str] = 'knn',
-                                imputer_config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
-        """
-        Merge all processed modalities into a single time-aligned DataFrame,
-        optionally impute missing values, and prepare for target creation.
-        
-        Args:
-            time_window: Resampling frequency (e.g., '1H', '30T').
-            prediction_horizon: How many hours ahead to predict migraine events.
-            imputation_method: Method to use for imputation ('knn', 'iterative', 'autoencoder', 'none').
-            imputer_config: Dictionary of parameters for the chosen imputer.
-            
-        Returns:
-            A time-indexed DataFrame with all features, patient_id, and a target column.
-        """
-        # Check and collect dataframes with valid DatetimeIndex
-        logging.info("Checking processed modality dataframes for merging...")
-        modality_sources = {
-            'eeg': self.eeg_data,
-            'weather': self.weather_data,
-            'sleep': self.sleep_data,
-            'stress': self.stress_data
-        }
-        dfs_to_merge = []
-        for name, df in modality_sources.items():
-            if df is not None and not df.empty:
-                if isinstance(df.index, pd.DatetimeIndex):
-                    logging.info(f"  - Found valid DatetimeIndex for '{name}' data.")
-                    # IMPORTANT: Ensure timezone consistency or remove timezone before merging
-                    if df.index.tz is not None:
-                        df = df.tz_localize(None) # Make timezone naive
-                    dfs_to_merge.append(df.add_prefix(f"{name}_")) # Add prefix now
-                else:
-                    logging.warning(f"Warning: '{name}' data found but index is not DatetimeIndex (type: {type(df.index)}). Skipping merge.")
+        # ... similar alignment for other modalities like sleep, stress ...
+        # Ensure they also have a 'timestamp' column for alignment
 
-        if not dfs_to_merge:
-             logging.error("Error: No modality dataframes available with DatetimeIndex for merging.")
+        self.aligned_data = aligned_modalities
+        return aligned_modalities
+
+    def _regularize_impute_modality(self,
+                                   raw_df: pd.DataFrame,
+                                   modality_name: str,
+                                   patient_ids: List[str],
+                                   global_start_time: pd.Timestamp,
+                                   global_end_time: pd.Timestamp,
+                                   feature_cols: List[str]) -> pd.DataFrame:
+        """
+        Regularizes and imputes data for a single modality across all patients.
+        Uses BASIC imputation (ffill then fillna(0)) for this version.
+
+        Args:
+            raw_df: Raw DataFrame for the modality (must contain 'patient_id' and 'timestamp').
+            modality_name: Name of the modality (e.g., 'eeg').
+            patient_ids: List of unique patient IDs to process.
+            global_start_time: The earliest timestamp across all data.
+            global_end_time: The latest timestamp across all data.
+            feature_cols: List of feature column names for this modality.
+
+        Returns:
+            A single DataFrame containing regularized and imputed data for this modality
+            for all specified patients, with columns ['patient_id', 'timestamp'] + feature_cols.
+        """
+        processed_patient_dfs = []
+
+        # Ensure essential columns exist
+        if 'timestamp' not in raw_df.columns or 'patient_id' not in raw_df.columns:
+             logging.error(f"Essential columns ('timestamp', 'patient_id') missing in {modality_name} raw data. Cannot process.")
              return pd.DataFrame()
 
-        # --- Determine Overlap Range ---
-        min_times = [df.index.min() for df in dfs_to_merge]
-        max_times = [df.index.max() for df in dfs_to_merge]
-        start_time = max(min_times)
-        end_time = min(max_times)
-        logging.debug(f"Calculated overlap range: Start={start_time}, End={end_time}")
+        logging.info(f"Regularizing and imputing modality: {modality_name} using basic ffill/fillna(0)...")
 
-        if start_time >= end_time:
-            logging.warning(f"No time overlap found between data sources. Start: {start_time}, End: {end_time}")
+        for patient_id in patient_ids:
+            # Filter data for the current patient
+            patient_df = raw_df[raw_df['patient_id'] == patient_id].copy()
+
+            if patient_df.empty:
+                # logging.debug(f"No {modality_name} data found for patient {patient_id}.") # Can be noisy
+                continue
+
+            # Define the GLOBAL hourly index for this patient
+            hourly_index = pd.date_range(start=global_start_time, end=global_end_time, freq='H', name='timestamp')
+
+            # Prepare for reindexing: Set timestamp as index, drop duplicates within the hour for this patient
+            # Take the *first* record if multiple exist within the same hour for this patient
+            patient_df = patient_df.sort_values('timestamp') # Sort before dropping
+            # Use drop_duplicates on timestamp, keeping the first entry for that hour
+            patient_df_unique_time = patient_df.drop_duplicates(subset=['timestamp'], keep='first').set_index('timestamp')
+
+            # Reindex to the GLOBAL hourly grid - introduces NaNs
+            regular_df = patient_df_unique_time.reindex(hourly_index)
+
+            # --- Basic Imputation --- #
+            # Select only the feature columns intended for this modality
+            current_feature_cols = [col for col in feature_cols if col in regular_df.columns]
+            if current_feature_cols:
+                # Forward fill first, then fill remaining NaNs (usually at the beginning) with 0
+                regular_df[current_feature_cols] = regular_df[current_feature_cols].ffill().fillna(0)
+            else:
+                logging.warning(f"No defined feature columns found in regularized data for patient {patient_id}, modality {modality_name}. Imputation skipped for this patient/modality.")
+
+            # Add patient_id back as a column (it was lost during reindex if not in feature_cols)
+            regular_df['patient_id'] = patient_id
+
+            # Reset index to make timestamp a column again for later merging
+            processed_patient_dfs.append(regular_df.reset_index())
+
+        if not processed_patient_dfs:
+             logging.warning(f"No data processed for modality {modality_name} across all patients.")
+             return pd.DataFrame()
+
+        # Concatenate all processed patient data for this modality
+        modality_df_processed = pd.concat(processed_patient_dfs, ignore_index=True)
+
+        logging.info(f"Finished processing {modality_name}. Result shape: {modality_df_processed.shape}")
+        return modality_df_processed
+
+    def create_multimodal_dataset(self,
+                                prediction_horizon: int = 6,
+                                imputation_method: Optional[str] = 'ffill', # Default to ffill, advanced optional later
+                                imputer_config: Optional[Dict[str, Any]] = None,
+                                required_modalities: Optional[List[str]] = None) -> pd.DataFrame:
+        """
+        Creates a single, aligned multimodal dataset using the 'regularize-then-combine' strategy.
+        Applies BASIC imputation (ffill -> fillna(0)) during regularization by default.
+        Advanced imputation can be enabled via imputation_method argument (currently disabled).
+
+        Steps:
+        1. Load raw data for all relevant modalities (EEG, Sleep, Stress, Weather).
+        2. Determine unique patient IDs and the global time range.
+        3. For each patient-specific modality (EEG, Sleep, Stress):
+           - Call _regularize_impute_modality to process data per patient (reindex hourly, basic impute)
+             and combine results for that modality across all patients.
+        4. Process global modalities (Weather): Reindex to global hourly grid and basic impute.
+        5. Create a base patient-time grid.
+        6. Merge all processed modality DataFrames onto the base grid using left joins.
+        7. Calculate the target variable ('migraine_within_horizon').
+        8. Perform final feature engineering (time features).
+        9. Return the final DataFrame indexed by timestamp.
+
+        Args:
+            prediction_horizon: Hours ahead to predict migraine onset.
+            imputation_method: Method for imputation ('ffill', or advanced like 'knn' - currently disabled).
+            imputer_config: Configuration dictionary for advanced imputers.
+            required_modalities: List of modalities that MUST be present. If None, uses all available.
+
+        Returns:
+            A single Pandas DataFrame with aligned multimodal data, indexed by hourly timestamp.
+            Includes 'patient_id' and the target 'migraine_within_horizon' columns.
+        """
+        logging.info("Starting multimodal dataset creation using 'regularize-then-combine' strategy...")
+
+        # --- 1. Load Raw Data --- #
+        raw_eeg = self._load_raw_data("eeg")
+        raw_sleep = self._load_raw_data("sleep")
+        raw_stress = self._load_raw_data("stress")
+        raw_weather = self._load_raw_data("weather") # Assumes weather has 'timestamp'
+
+        # --- 2. Determine Unique Patients and Global Time Range --- #
+        all_dfs = {"eeg": raw_eeg, "sleep": raw_sleep, "stress": raw_stress, "weather": raw_weather}
+        patient_ids_per_modality = {}
+        all_timestamps = []
+        all_patient_ids = set()
+
+        for name, df in all_dfs.items():
+            if not df.empty:
+                if 'timestamp' in df.columns:
+                    all_timestamps.append(df['timestamp'])
+                if 'patient_id' in df.columns:
+                    p_ids = set(df['patient_id'].unique())
+                    patient_ids_per_modality[name] = p_ids
+                    all_patient_ids.update(p_ids)
+
+        if not all_patient_ids:
+            logging.error("No patient IDs found across any patient-specific modality. Cannot proceed.")
             return pd.DataFrame()
-            
-        # --- Load Patient ID Mapping ---
-        patient_id_map = None
-        try:
-            eeg_raw_path = os.path.join(self.data_dir, "eeg", "all_eeg_data.csv")
-            if os.path.exists(eeg_raw_path):
-                eeg_raw_df = pd.read_csv(eeg_raw_path, parse_dates=['timestamp'])
-                if eeg_raw_df['timestamp'].dt.tz is not None:
-                     eeg_raw_df['timestamp'] = eeg_raw_df['timestamp'].dt.tz_localize(None) # Ensure TZ naive
-                
-                # Log patient distribution from raw file before any modification
-                patient_counts_raw = eeg_raw_df['patient_id'].value_counts()
-                logging.info(f"Found {len(patient_counts_raw)} unique patients in the raw EEG data file.")
-                logging.debug(f"Patient ID counts (raw): {dict(list(patient_counts_raw.items())[:10])}{'...' if len(patient_counts_raw) > 10 else ''}")
+        all_patient_ids = sorted(list(all_patient_ids))
+        logging.info(f"Found {len(all_patient_ids)} unique patient IDs across all modalities.")
 
-                # --- Create a map with UNIQUE timestamp index --- # 
-                # Group by timestamp and take the first patient_id for each unique timestamp
-                logging.info("Creating unique patient ID map by taking the first patient per timestamp...")
-                patient_id_map = eeg_raw_df.groupby('timestamp')['patient_id'].first()
-                # --- ----------------------------------------- --- #
-                
-                # Ensure the map index is sorted for reliable reindexing
-                patient_id_map = patient_id_map.sort_index()
-                
-                logging.info("Successfully loaded unique patient ID mapping from EEG data.")
-                
-            else:
-                 logging.warning("Could not load patient ID map: Raw EEG CSV not found.")
-        except Exception as e:
-            logging.warning(f"Error loading patient ID map from EEG data: {e}")
-            import traceback
-            traceback.print_exc()
-        # -----------------------------
+        if not all_timestamps:
+            logging.error("No valid timestamps found across any modality. Cannot determine time range.")
+            return pd.DataFrame()
 
-        # --- Create Base DataFrame and Merge ---
-        logging.info(f"Creating multimodal index from {start_time} to {end_time} with frequency {time_window}")
-        multimodal_index = pd.date_range(start=start_time, end=end_time, freq=time_window)
-        multimodal_df = pd.DataFrame(index=multimodal_index)
-        multimodal_df.index.name = 'timestamp'
+        global_start_time = pd.concat(all_timestamps).min().floor('H')
+        global_end_time = pd.concat(all_timestamps).max().ceil('H')
+        self.global_start_time = global_start_time # Store for potential use elsewhere
+        self.global_end_time = global_end_time
+        logging.info(f"Global time range: {self.global_start_time} to {self.global_end_time}")
 
-        logging.info("Resampling and joining numeric modalities...")
-        for df_prefixed in dfs_to_merge:
-            # Select only numeric columns BEFORE resampling
-            numeric_cols = df_prefixed.select_dtypes(include=np.number).columns
-            if not numeric_cols.empty:
-                # Resample numeric data using mean aggregation
-                df_resampled = df_prefixed[numeric_cols].resample(time_window).mean()
-                # Join with the main DataFrame
-                multimodal_df = multimodal_df.join(df_resampled, how='left')
-                logging.info(f"  - Joined data with columns: {list(df_resampled.columns)}")
-            else:
-                mod_name = df_prefixed.columns[0].split('_')[0] if df_prefixed.columns else 'Unknown'
-                logging.warning(f"No numeric columns found for modality '{mod_name}'. Skipping join.")
+        processed_modalities = {}
+        modality_feature_cols = {} # Store identified feature columns per modality
 
-        logging.info(f"Shape after joining numeric modalities: {multimodal_df.shape}")
+        # --- 3. Process Patient-Specific Modalities --- #
+        modalities_to_process = {
+            'eeg': raw_eeg,
+            'sleep': raw_sleep,
+            'stress': raw_stress
+        }
+        # Define FEATURE columns expected for each modality (excluding IDs, timestamps, etc.)
+        for name, df in modalities_to_process.items():
+             if not df.empty:
+                 # Identify potential features robustly
+                 potential_feature_cols = [col for col in df.columns if col not in ['patient_id', 'timestamp', 'date', 'hour', 'start_time', 'end_time', 'source_file']]
+                 # Filter out any remaining non-numeric types just in case
+                 numeric_feature_cols = df[potential_feature_cols].select_dtypes(include=np.number).columns.tolist()
+                 modality_feature_cols[name] = numeric_feature_cols
+                 logging.info(f"Identified numeric feature columns for {name}: {numeric_feature_cols}")
 
-        # --- Join and Fill Patient ID using Reindex ---
-        if patient_id_map is not None:
-            # Reindex WITHOUT forward fill first to preserve alignment
-            patient_ids_reindexed = patient_id_map.reindex(multimodal_df.index) 
-            multimodal_df['patient_id'] = patient_ids_reindexed
-            
-            # --- Custom Forward Fill Logic --- #
-            logging.info("Applying custom forward fill for patient IDs...")
-            # Identify rows with NaN patient IDs that need filling
-            nan_indices = multimodal_df.index[multimodal_df['patient_id'].isnull()]
-            if not nan_indices.empty:
-                logging.debug(f"Found {len(nan_indices)} timestamps with NaN patient IDs initially.")
-                # Create a temporary series with original IDs (non-NaN)
-                original_id_series = multimodal_df['patient_id'].dropna()
-                
-                if not original_id_series.empty:
-                    # Find the index of the last known ID for each NaN timestamp
-                    # Use searchsorted on the index of known IDs
-                    last_known_id_indices = original_id_series.index.searchsorted(nan_indices, side='right') - 1
-                    
-                    # Map these indices back to the actual timestamps with known IDs
-                    valid_indices_mask = last_known_id_indices >= 0
-                    fill_values_indices = original_id_series.index[last_known_id_indices[valid_indices_mask]]
-                    
-                    # Get the patient IDs corresponding to these timestamps
-                    fill_values = original_id_series.loc[fill_values_indices]
-                    
-                    # Assign the found IDs to the NaN rows
-                    # Ensure index alignment for assignment
-                    fill_series = pd.Series(fill_values.values, index=nan_indices[valid_indices_mask])
-                    multimodal_df['patient_id'].fillna(fill_series, inplace=True)
-                    logging.info(f"Filled {len(fill_series)} NaN patient IDs using custom forward fill.")
-                else:
-                    logging.warning("No non-NaN patient IDs found to perform forward fill.")
-            # --- End Custom Forward Fill --- #
-            
-            # Check for remaining NaNs and backfill if necessary
-            if multimodal_df['patient_id'].isnull().any():
-                missing_count = multimodal_df['patient_id'].isnull().sum()
-                logging.warning(f"Patient ID is still missing for {missing_count} records after custom ffill. Applying standard backfill.")
-                multimodal_df['patient_id'] = multimodal_df['patient_id'].bfill()
-                if multimodal_df['patient_id'].isnull().any():
-                    logging.error("Patient ID still missing after custom ffill and bfill. Cannot proceed reliably with patient-aware CV.")
-                    multimodal_df['patient_id'].fillna('UNKNOWN_PATIENT', inplace=True) # Fill remaining with placeholder
-            
-            logging.info("Successfully joined and filled patient IDs to multimodal dataframe.")
-            # Log final patient distribution in the multimodal dataframe
-            final_patient_counts = multimodal_df['patient_id'].value_counts()
-            logging.info(f"Found {len(final_patient_counts)} unique patients in the final multimodal dataframe.")
-            logging.debug(f"Patient ID counts (final): {dict(list(final_patient_counts.items())[:20])}{'...' if len(final_patient_counts) > 20 else ''}")
+        for name, df in modalities_to_process.items():
+            if df.empty or name not in modality_feature_cols or not modality_feature_cols[name]:
+                 logging.warning(f"Skipping empty or featureless raw data for modality: {name}")
+                 continue
 
+            processed_df = self._regularize_impute_modality(
+                raw_df=df,
+                modality_name=name,
+                patient_ids=all_patient_ids,
+                global_start_time=self.global_start_time,
+                global_end_time=self.global_end_time,
+                feature_cols=modality_feature_cols[name]
+            )
+            if not processed_df.empty:
+                # Add prefix to avoid column name collisions during merge
+                feature_cols_renamed = modality_feature_cols[name]
+                processed_df = processed_df.rename(columns={col: f"{name}_{col}" for col in feature_cols_renamed if col in processed_df.columns})
+                processed_modalities[name] = processed_df
+
+        # --- 4. Process Global Modalities (Weather) --- #
+        if not raw_weather.empty and 'timestamp' in raw_weather.columns:
+            logging.info("Processing global modality: weather using basic ffill/fillna(0)...")
+            potential_weather_features = [col for col in raw_weather.columns if col not in ['timestamp', 'latitude', 'longitude']] # Adjust non-feature cols
+            weather_feature_cols = raw_weather[potential_weather_features].select_dtypes(include=np.number).columns.tolist()
+            modality_feature_cols['weather'] = weather_feature_cols # Store for reference
+            logging.info(f"Identified numeric feature columns for weather: {weather_feature_cols}")
+
+            hourly_index = pd.date_range(start=self.global_start_time, end=self.global_end_time, freq='H', name='timestamp')
+            # Resample taking the first value within each hour, then reindex
+            # Use drop_duplicates before set_index
+            weather_unique_time = raw_weather.sort_values('timestamp').drop_duplicates(subset=['timestamp'], keep='first').set_index('timestamp')
+            weather_regular = weather_unique_time.reindex(hourly_index)
+
+            # Basic Impute weather features
+            current_weather_features = [col for col in weather_feature_cols if col in weather_regular.columns]
+            if current_weather_features:
+                 weather_regular[current_weather_features] = weather_regular[current_weather_features].ffill().fillna(0)
+
+            weather_regular = weather_regular.reset_index() # Keep timestamp as column for merge
+            # Add prefix
+            weather_regular = weather_regular.rename(columns={col: f"weather_{col}" for col in weather_feature_cols if col in weather_regular.columns})
+            processed_modalities['weather'] = weather_regular
+            logging.info(f"Finished processing weather. Result shape: {weather_regular.shape}")
         else:
-             logging.warning("Could not join patient IDs as the mapping was not loaded.")
-        # --- ------------------------------------- ---
+            logging.warning("Weather data is empty or missing 'timestamp'. Skipping weather processing.")
 
-        # --- Basic Imputation (ffill + fillna(0)) ---
-        logging.info("Forward filling missing values...")
-        multimodal_df_filled = multimodal_df.ffill() # Apply ffill first
-        logging.info("Filling remaining NaNs with 0...")
-        multimodal_df_filled.fillna(0, inplace=True) # Apply fillna(0) after ffill
-        logging.info(f"Shape after basic ffill/fillna(0): {multimodal_df_filled.shape}")
+        # --- 5. Create Base Grid --- #
+        if not all_patient_ids:
+             logging.error("Cannot create base grid without patient IDs.")
+             return pd.DataFrame()
+        logging.info("Creating base patient-time grid...")
+        all_hourly_timestamps = pd.date_range(start=self.global_start_time, end=self.global_end_time, freq='H')
+        base_index = pd.MultiIndex.from_product(
+             [all_patient_ids, all_hourly_timestamps],
+             names=['patient_id', 'timestamp']
+        )
+        final_df = pd.DataFrame(index=base_index).reset_index()
+        logging.info(f"Base grid created with shape: {final_df.shape}")
 
-        # Check for NaNs before advanced imputation
-        numeric_cols_for_impute = multimodal_df_filled.select_dtypes(include=np.number).columns
-        if multimodal_df_filled[numeric_cols_for_impute].isnull().any().any():
-             logging.warning("Warning: NaNs still present before advanced imputation block.")
-             logging.debug(multimodal_df_filled.isnull().sum())
-        else:
-             logging.info("No NaNs detected in numeric columns before advanced imputation block.")
+        # --- 6. Merge All Processed Data Onto Base Grid --- #
+        # Ensure base types are correct for merging
+        final_df['patient_id'] = final_df['patient_id'].astype(str)
+        final_df['timestamp'] = pd.to_datetime(final_df['timestamp'])
 
-        # --- Advanced Imputation (applied to the ffill/fillna'd data) ---
-        multimodal_df_imputed = multimodal_df_filled.copy() # Start with the basically filled data
-        if imputation_method and imputation_method.lower() != 'none':
-             logging.info(f"Attempting advanced imputation using method: {imputation_method}")
-             if not numeric_cols_for_impute.empty:
-                 X_numeric = multimodal_df_filled[numeric_cols_for_impute].values
-                 imputer: Optional[BaseImputer] = None
-                 imputer_params = {}
-                 if imputer_config:
-                    try:
-                        imputer_params = json.loads(imputer_config)
-                    except json.JSONDecodeError: pass # Ignore errors, use defaults
+        modalities_to_merge = ['eeg', 'sleep', 'stress', 'weather'] # Order might matter
+        for name in modalities_to_merge:
+             if name in processed_modalities:
+                 logging.info(f"Merging {name} data onto base grid...")
+                 mod_df = processed_modalities[name]
+                 merge_keys = ['patient_id', 'timestamp'] if 'patient_id' in mod_df.columns else ['timestamp']
 
-                 # Reshape for imputer wrappers if needed (most expect 2D or 3D)
-                 if X_numeric.ndim == 2:
-                     X_for_impute = X_numeric.reshape(1, X_numeric.shape[0], X_numeric.shape[1]) # Treat as 1 sample
-                 else:
-                     logging.error("Unexpected shape for numeric data before imputation.")
-                     X_for_impute = None
+                 # Ensure key types match base grid
+                 if 'patient_id' in merge_keys:
+                     mod_df['patient_id'] = mod_df['patient_id'].astype(str)
+                 mod_df['timestamp'] = pd.to_datetime(mod_df['timestamp'])
 
-                 if X_for_impute is not None:
-                     # Initialize imputer
-                     if imputation_method.lower() == 'knn':
-                         imputer = KNNImputer(**imputer_params)
-                     elif imputation_method.lower() == 'iterative':
-                         imputer = IterativeImputerWrapper(**imputer_params)
-                     elif imputation_method.lower() == 'autoencoder':
-                         imputer_params.setdefault('random_state', imputer_params.get('seed'))
-                         imputer = AutoencoderImputer(**imputer_params)
-                     else:
-                          logging.warning(f"Unknown advanced imputation method '{imputation_method}'.")
+                 # Select only key columns and feature columns for merging
+                 cols_to_merge = merge_keys + [col for col in mod_df.columns if col not in merge_keys]
+                 # Ensure keys are unique before merge to avoid duplication issues
+                 mod_df_subset = mod_df[cols_to_merge].drop_duplicates(subset=merge_keys, keep='first')
 
-                     # Fit and transform
-                     if imputer:
-                          try:
-                              # Note: Mask might not be needed if data is already filled, but some imputers might use it
-                              mask = ~np.isnan(X_for_impute)
-                              X_imputed_3d = imputer.fit_transform(X_for_impute, mask)
-                              X_imputed_2d = X_imputed_3d.reshape(X_imputed_3d.shape[1], X_imputed_3d.shape[2])
-                              # Update the numeric columns in our dataframe
-                              multimodal_df_imputed[numeric_cols_for_impute] = X_imputed_2d
-                              logging.info(f"Advanced imputation ({imputation_method}) applied.")
-                          except Exception as e:
-                              logging.error(f"ERROR during {imputation_method} imputation: {e}")
-                              import traceback
-                              traceback.print_exc()
-                              logging.warning("Skipping advanced imputation due to error.")
+                 final_df = pd.merge(final_df, mod_df_subset,
+                                     on=merge_keys,
+                                     how='left') # Use left merge to keep all patient-time slots
+                 logging.info(f"Shape after merging {name}: {final_df.shape}")
              else:
-                  logging.warning("No numeric columns found for advanced imputation.")
-        else:
-             logging.info("Skipping advanced imputation as method is 'none' or not specified.")
-        # --- End Advanced Imputation ---
+                  logging.warning(f"Modality '{name}' was not processed successfully or empty. Skipping merge.")
 
-        # --- Calculate Migraine Target Label ---
-        logging.info("Calculating migraine target label...")
-        multimodal_df_imputed['migraine_within_horizon'] = False # Initialize
-        if self.migraine_events:
-            valid_event_times = []
-            for event in self.migraine_events:
-                if 'start_time' in event and pd.notna(event['start_time']):
-                    event_ts = pd.Timestamp(event['start_time'])
-                    if event_ts.tz is not None: # Ensure timezone naive like index
-                         event_ts = event_ts.tz_localize(None)
-                    valid_event_times.append(event_ts)
-            
-            if valid_event_times:
-                valid_event_times.sort()
-                horizon_delta = pd.Timedelta(hours=prediction_horizon)
-                
-                # MODIFIED: Use a shorter effective horizon for labeling to create more balanced classes
-                # This reduces the window where a migraine is considered "positive", making positive labels less common
-                effective_horizon = min(prediction_horizon, 3)  # Use at most 3 hours for positive labeling
-                effective_delta = pd.Timedelta(hours=effective_horizon)
-                
-                # MODIFIED: Skip some timestamps to balance classes (controlled downsampling of time points)
-                # Calculate how many indices to skip based on event density
-                time_points = multimodal_df_imputed.index
-                estimated_positive_rate = len(valid_event_times) * effective_horizon / (len(time_points) * 1.0)
-                target_positive_rate = 0.4  # Target ~40% positive rate
-                
-                # Skip factor calculation - skip more time points if estimated positive rate is too high
-                skip_factor = 1
-                if estimated_positive_rate > target_positive_rate and estimated_positive_rate > 0:
-                    skip_factor = min(3, max(1, int(estimated_positive_rate / target_positive_rate)))
-                
-                logging.info(f"Using effective horizon of {effective_horizon}h for positive labeling")
-                if skip_factor > 1:
-                    logging.info(f"Applying time point sampling with skip factor {skip_factor} for better class balance")
-                
-                num_positive = 0
-                for i, current_ts in enumerate(time_points):
-                    # Skip some indices for better balance if needed
-                    if skip_factor > 1 and i % skip_factor != 0 and num_positive > 0:
-                        continue
-                        
-                    # Use effective horizon for labeling
-                    window_end = current_ts + effective_delta
-                    
-                    # Optimized check using searchsorted (requires sorted event times)
-                    start_idx = np.searchsorted(valid_event_times, current_ts, side='left')
-                    end_idx = np.searchsorted(valid_event_times, window_end, side='left')
-                    
-                    if start_idx != end_idx: # If events exist between start and end index
-                        multimodal_df_imputed.loc[current_ts, 'migraine_within_horizon'] = True
-                        num_positive += 1
-                
-                # Calculate actual positive rate after labeling
-                positive_rate = num_positive / len(multimodal_df_imputed)
-                logging.info(f"Calculated target labels. Found {num_positive} positive samples (migraine within {effective_horizon}h horizon), {positive_rate:.2%} positive rate.")
+        # --- 7. Calculate Target Variable --- #
+        logging.info("Calculating target variable 'migraine_within_horizon'...")
+        if self.migraine_events is None:
+            self.load_migraine_events()
+
+        if not self.migraine_events:
+            logging.warning("No migraine events loaded, cannot calculate target variable. Column will be all False.")
+            final_df['migraine_within_horizon'] = False
+        else:
+            # Create a DataFrame from migraine events
+            events_df = pd.DataFrame(self.migraine_events)
+            if 'start_time' not in events_df.columns or 'patient_id' not in events_df.columns:
+                 logging.error("'start_time' or 'patient_id' column missing in migraine events. Cannot calculate patient-specific target.")
+                 final_df['migraine_within_horizon'] = False
             else:
-                logging.warning("No valid migraine event times found to create target labels.")
+                events_df['start_time'] = pd.to_datetime(events_df['start_time'])
+                events_df['patient_id'] = events_df['patient_id'].astype(str)
+
+                # Create a helper structure: dictionary mapping patient_id to sorted list of their migraine start times
+                patient_migraine_times = events_df.dropna(subset=['start_time', 'patient_id'])\
+                                                .groupby('patient_id')['start_time']\
+                                                .apply(lambda x: sorted(x.unique()))\
+                                                .to_dict()
+
+                # Define horizon delta outside the function for efficiency
+                horizon_delta = pd.Timedelta(hours=prediction_horizon)
+
+                def check_migraine_horizon_patient(row):
+                    patient_id = row['patient_id']
+                    ts = row['timestamp']
+                    if patient_id in patient_migraine_times:
+                        patient_times = patient_migraine_times[patient_id]
+                        # Check if any event falls within (ts, ts + horizon_delta]
+                        for event_time in patient_times:
+                            if ts < event_time <= ts + horizon_delta:
+                                return True
+                            if event_time > ts + horizon_delta:
+                                 break # Since times are sorted
+                    return False
+
+                logging.info("Applying target calculation function...")
+                final_df['migraine_within_horizon'] = final_df.apply(check_migraine_horizon_patient, axis=1)
+                logging.info("Finished applying target calculation function.")
+
+            target_counts = final_df['migraine_within_horizon'].value_counts()
+            logging.info(f"Target variable calculated. Distribution: {target_counts.to_dict()}")
+            if True not in target_counts or target_counts[True] == 0:
+                logging.warning("No positive migraine events found within the horizon for any timestamp.")
+
+        # --- 8. Final Feature Engineering (Time Features) --- #
+        logging.info("Performing final feature engineering...")
+        final_df['hour_of_day'] = final_df['timestamp'].dt.hour
+        final_df['day_of_week'] = final_df['timestamp'].dt.dayofweek
+        final_df['month_of_year'] = final_df['timestamp'].dt.month
+        # Add more features if needed (e.g., rolling averages across modalities)
+
+        # --- 9. Set Index and Sort --- #
+        final_df = final_df.set_index('timestamp').sort_index()
+
+        # Optional: Drop rows where all features are NaN (unlikely with ffill but possible)
+        # feature_columns_final = [col for col in final_df.columns if col not in ['patient_id', 'migraine_within_horizon', 'hour_of_day', 'day_of_week', 'month_of_year']]
+        # final_df = final_df.dropna(subset=feature_columns_final, how='all')
+
+        logging.info(f"Multimodal dataset creation complete. Final shape: {final_df.shape}")
+        # Check for patient ID loss again
+        final_patients = final_df['patient_id'].nunique()
+        if final_patients < len(all_patient_ids):
+             logging.warning(f"Potential patient ID loss: Started with {len(all_patient_ids)}, final DF has {final_patients} unique IDs.")
         else:
-            logging.warning("No migraine events loaded. Target labels will all be False.")
-        # --- End Target Calculation ---
+            logging.info(f"Patient ID count consistent: {final_patients} unique IDs found in final DataFrame.")
 
-        logging.info(f"Final shape of multimodal dataset: {multimodal_df_imputed.shape}")
-        # Log final NaN check
-        if multimodal_df_imputed.isnull().any().any():
-             logging.warning("Warning: NaNs detected in final multimodal DataFrame.")
-             logging.debug(multimodal_df_imputed.isnull().sum())
-
-        return multimodal_df_imputed
+        self.aligned_data = final_df # Store the final result
+        return final_df
     
     def prepare_data_for_fusemoe(self, multimodal_df: pd.DataFrame,
                                window_size: int = 24,
@@ -702,16 +818,42 @@ class MigraineDataPipeline:
              logging.error("'migraine_within_horizon' target column missing. Cannot prepare data.")
              return {'X': {}, 'y': np.array([]), 'groups': None, 'modalities': [], 'features_per_modality': {}}
 
-        # Determine columns to drop for feature extraction
-        feature_cols_to_drop = ['migraine_within_horizon']
+        # --- Determine Feature Columns Rigorously --- #
+        # Start with all columns
+        all_cols = multimodal_df.columns.tolist()
+        # Define non-feature columns explicitly
+        non_feature_cols = ['migraine_within_horizon']
         if has_patient_id:
-            feature_cols_to_drop.append('patient_id')
+            non_feature_cols.append('patient_id')
+        # Explicitly define columns NOT belonging to a modality's features
+        # These are often metadata or engineered time features added later.
+        # They should not be part of the windowed input for the model's core layers.
+        excluded_cols_from_modality_features = set([
+            'latitude', 
+            'longitude', 
+            'hour_of_day', 
+            'day_of_week', 
+            'month_of_year'
+        ])
+        # Select only columns that are NOT in non_feature_cols AND are numeric
+        numeric_df = multimodal_df.select_dtypes(include=np.number)
+        # Further filter out the explicitly excluded columns
+        feature_columns = [col for col in numeric_df.columns \
+                           if col not in non_feature_cols \
+                           and col not in excluded_cols_from_modality_features]
+        
+        logging.info(f"Identified {len(feature_columns)} numeric feature columns for windowing: {feature_columns}")
+        if not feature_columns:
+            logging.error("No numeric feature columns found after filtering. Cannot prepare data.")
+            return {'X': {}, 'y': np.array([]), 'groups': None, 'modalities': [], 'features_per_modality': {}}
+        # --------------------------------------------- #
 
         # Iterate through windows and create feature/target/group triplets
         num_possible_windows = len(multimodal_df) - window_size - prediction_horizon + 1
-        logging.debug(f"Total rows: {len(multimodal_df)}, Num possible windows: {num_possible_windows}")
+        logging.info(f"Total rows: {len(multimodal_df)}, Creating {num_possible_windows} windows...")
 
-        for i in range(0, num_possible_windows, step_size):
+        # Wrap the range with tqdm for progress bar
+        for i in tqdm(range(0, num_possible_windows, step_size), desc="Creating windows", unit="window"):
             window_start_idx = i
             window_end_idx = i + window_size
             target_idx = window_end_idx + prediction_horizon - 1 # Correct target index
@@ -721,9 +863,18 @@ class MigraineDataPipeline:
                 logging.warning(f"Target index {target_idx} out of bounds for window starting at {window_start_idx}. Skipping.")
                 continue
 
-            # Extract features for the window, dropping non-feature columns
-            features_df = multimodal_df.iloc[window_start_idx:window_end_idx].drop(columns=feature_cols_to_drop, errors='ignore')
-            X_list.append(features_df.values) # Append numpy array
+            # --- Extract ONLY the identified numeric features --- #
+            features_df_window = multimodal_df.iloc[window_start_idx:window_end_idx][feature_columns]
+            # Check for unexpected dtypes AFTER slicing (paranoid check)
+            if features_df_window.select_dtypes(exclude=np.number).shape[1] > 0:
+                 logging.error(f"Non-numeric dtypes found in window {i}! Columns: {features_df_window.select_dtypes(exclude=np.number).columns.tolist()}")
+                 # Handle error: skip window, try coercing, etc.
+                 # For now, let's try coercing again, though it shouldn't be needed
+                 features_df_window = features_df_window.apply(pd.to_numeric, errors='coerce').fillna(0) # Coerce and fill any new NaNs
+                 logging.warning(f"Coerced non-numeric types found in window {i}.")
+                 
+            X_list.append(features_df_window.values) # Append numpy array
+            # --------------------------------------------------- #
 
             # Extract target label
             y_list.append(multimodal_df.iloc[target_idx]['migraine_within_horizon'])
@@ -771,44 +922,85 @@ class MigraineDataPipeline:
         features_per_modality = {}
         ordered_modalities = []
 
-        # Determine feature columns and order from the first sample's DataFrame structure
-        if X_list:
-            # Get column names from the DataFrame used to create the first sample
-            # Need the actual column names preserved before .values was called
-            # Let's re-extract the first feature DF to get columns reliably
-            first_features_df = multimodal_df.iloc[0:window_size].drop(columns=feature_cols_to_drop, errors='ignore')
-            ordered_feature_columns = first_features_df.columns.tolist()
-
-            # Extract modality prefixes and counts
-            modality_prefixes = sorted(list(set([col.split('_')[0] for col in ordered_feature_columns if '_' in col])))
+        # Determine feature columns and order from the identified numeric feature_columns list
+        if X_list and feature_columns:
+            # Extract modality prefixes and counts FROM THE RIGOROUSLY DEFINED feature_columns
+            # Ensure columns used for prefix splitting are indeed the numeric ones selected earlier
+            modality_prefixes = sorted(list(set([col.split('_')[0] for col in feature_columns if '_' in col])))
 
             current_col_idx = 0
+            temp_features_per_modality = {} # Use temporary dict to build indices
             for mod_prefix in modality_prefixes:
-                mod_cols = [col for col in ordered_feature_columns if col.startswith(mod_prefix + '_')]
+                # Find columns in our *selected* feature_columns list that match the prefix
+                mod_cols = [col for col in feature_columns if col.startswith(mod_prefix + '_')]
                 if mod_cols:
                     count = len(mod_cols)
-                    features_per_modality[mod_prefix] = count
+                    temp_features_per_modality[mod_prefix] = count
                     ordered_modalities.append(mod_prefix)
                     # Store indices range for slicing later
-                    features_per_modality[f"{mod_prefix}_indices"] = (current_col_idx, current_col_idx + count)
+                    temp_features_per_modality[f"{mod_prefix}_indices"] = (current_col_idx, current_col_idx + count)
                     current_col_idx += count
+                else:
+                     # This case should ideally not happen if prefixes are derived from feature_columns
+                     logging.warning(f"No columns found for prefix '{mod_prefix}' within the selected numeric feature columns. This might indicate an issue.")
+                     
+            # Check if the total count matches
+            total_features_counted = sum(temp_features_per_modality[mod] for mod in ordered_modalities)
+            if total_features_counted != len(feature_columns):
+                 logging.error(f"Mismatch in feature count: Selected {len(feature_columns)} features, but counted {total_features_counted} via prefixes.")
+                 # Handle error - perhaps don't proceed with splitting?
+            else:
+                 features_per_modality = temp_features_per_modality # Assign if counts match
+                 logging.info(f"Successfully mapped {total_features_counted} features to {len(ordered_modalities)} modalities based on prefixes.")
 
             # Now split the stacked numpy arrays in X_list back into modalities
-            if ordered_modalities:
-                # Convert X_list (list of [window, features]) into one large array [batch, window, features]
-                X_stacked_np = np.stack(X_list, axis=0) # Shape: [Batch, Window, TotalFeatures]
+            if ordered_modalities and features_per_modality:
+                try:
+                    # Convert X_list (list of [window, features]) into one large array [batch, window, features]
+                    X_stacked_np = np.stack(X_list, axis=0) # Shape: [Batch, Window, TotalNumericFeatures]
 
-                for modality in ordered_modalities:
-                    start_idx, end_idx = features_per_modality[f"{modality}_indices"]
-                    X_dict[modality] = X_stacked_np[:, :, start_idx:end_idx] # Slice the stacked array
+                    # Ensure the number of features in stacked array matches expected count
+                    if X_stacked_np.shape[2] != len(feature_columns):
+                         logging.error(f"Stacked array feature dimension ({X_stacked_np.shape[2]}) does not match expected numeric feature count ({len(feature_columns)}). Aborting split.")
+                         X_dict = {} # Clear dict to indicate failure
+                         ordered_modalities = []
+                         features_per_modality = {}
+                    else:
+                        for modality in ordered_modalities:
+                            if f"{modality}_indices" in features_per_modality:
+                                start_idx, end_idx = features_per_modality[f"{modality}_indices"]
+                                X_dict[modality] = X_stacked_np[:, :, start_idx:end_idx] # Slice the stacked array
+                            else:
+                                 logging.warning(f"Indices not found for modality '{modality}' during splitting. Skipping.")
 
-                # Validate shapes
-                for modality, data in X_dict.items():
-                    expected_shape = (len(X_list), window_size, features_per_modality[modality])
-                    if data.shape != expected_shape:
-                        logging.warning(f"Warning: Shape mismatch for modality '{modality}'. Expected {expected_shape}, got {data.shape}")
+                        # Validate shapes
+                        for modality, data in X_dict.items():
+                            expected_feature_count = features_per_modality.get(modality)
+                            if expected_feature_count is None:
+                                 logging.warning(f"Could not find feature count for modality '{modality}' during shape validation.")
+                                 continue
+                            expected_shape = (len(X_list), window_size, expected_feature_count)
+                            if data.shape != expected_shape:
+                                logging.warning(f"Shape mismatch for modality '{modality}'. Expected {expected_shape}, got {data.shape}")
+
+                except ValueError as e:
+                     logging.error(f"Error stacking feature list into numpy array: {e}. Check for consistent shapes in X_list.")
+                     # Clear dicts to indicate failure
+                     X_dict = {}
+                     ordered_modalities = []
+                     features_per_modality = {}
+                except Exception as e:
+                     logging.error(f"Unexpected error during feature splitting: {e}", exc_info=True)
+                     X_dict = {}
+                     ordered_modalities = []
+                     features_per_modality = {}
             else:
-                 logging.warning("Could not determine modality order or features. X_dict will be empty.")
+                 logging.warning("Could not determine modality order or features properly. X_dict will be empty.")
+                 X_dict = {}
+                 ordered_modalities = []
+                 features_per_modality = {}
+        else:
+             logging.warning("X_list or feature_columns is empty. Cannot prepare X_dict.")
 
         return {
             'X': X_dict,
@@ -818,174 +1010,60 @@ class MigraineDataPipeline:
             'features_per_modality': {mod: count for mod, count in features_per_modality.items() if not mod.endswith('_indices')}
         }
     
-    def create_simple_multimodal_dataset(self, time_window: str = '24H',
-                               prediction_horizon: int = 6) -> pd.DataFrame:
-        """
-        Create a simplified multimodal dataset from all available data without complex alignments.
-        
-        Args:
-            time_window: Time window for feature extraction (e.g., '24H', '12H')
-            prediction_horizon: Prediction horizon in hours
-            
-        Returns:
-            DataFrame with multimodal features and target labels
-        """
-        print(f"Creating simplified multimodal dataset with {time_window} window and {prediction_horizon}h horizon...")
-        
-        # Create date range from the start of data to the end
-        date_range = []
-        
-        # Use migraine dates for reference
-        migraine_dates = []
-        for event in self.migraine_events:
-            if isinstance(event.get('start_time'), str):
-                date = pd.Timestamp(event.get('start_time')).date()
-            else:
-                date = pd.Timestamp(event.get('start_time')).date()
-            migraine_dates.append(date)
-        
-        # Use sleep data dates as reference for normal days
-        sleep_dates = []
-        if not self.sleep_data.empty:
-            for _, row in self.sleep_data.iterrows():
-                if isinstance(row.get('date'), str):
-                    date = pd.Timestamp(row.get('date')).date()
-                else:
-                    date = row.get('date').date()
-                sleep_dates.append(date)
-        
-        # Create dataset rows
-        multimodal_rows = []
-        
-        # Use all unique dates
-        unique_dates = sorted(set(migraine_dates + sleep_dates))
-        
-        # For each date
-        for date in unique_dates:
-            timestamp = pd.Timestamp(date)
-            
-            # Check if this date had a migraine
-            had_migraine = date in migraine_dates
-            
-            # Features dictionary
-            features = {}
-            
-            # Add EEG features if available
-            if not self.eeg_data.empty:
-                eeg_on_date = self.eeg_data[
-                    self.eeg_data['start_time'].dt.date == date
-                ]
-                if not eeg_on_date.empty:
-                    # Use mean of EEG features for the day
-                    for col in eeg_on_date.columns:
-                        if col not in ['start_time', 'patient_id', 'file', 'channel']:
-                            features[f'eeg_{col}'] = eeg_on_date[col].mean()
-            
-            # Add weather features if available
-            if not self.weather_data.empty:
-                weather_on_date = self.weather_data[
-                    self.weather_data['start_time'].dt.date == date
-                ]
-                if not weather_on_date.empty:
-                    # Use mean of weather features for the day
-                    for col in weather_on_date.columns:
-                        if col not in ['start_time', 'latitude', 'longitude']:
-                            features[f'weather_{col}'] = weather_on_date[col].mean()
-            
-            # Add sleep features if available
-            if not self.sleep_data.empty:
-                sleep_on_date = self.sleep_data[
-                    self.sleep_data['date'].dt.date == date
-                ]
-                if not sleep_on_date.empty:
-                    # Use all sleep features
-                    for col in sleep_on_date.columns:
-                        if col not in ['date', 'patient_id', 'sleep_start', 'sleep_end']:
-                            features[f'sleep_{col}'] = sleep_on_date[col].values[0]
-            
-            # Add stress features if available
-            if not self.stress_data.empty:
-                stress_on_date = self.stress_data[
-                    self.stress_data['start_time'].dt.date == date
-                ]
-                if not stress_on_date.empty:
-                    # Use mean of stress features for the day
-                    for col in stress_on_date.columns:
-                        if col not in ['start_time', 'patient_id', 'source']:
-                            features[f'stress_{col}'] = stress_on_date[col].mean()
-            
-            # Only add the row if we have features
-            if features:
-                # Add timestamp and target
-                features['start_time'] = timestamp
-                features['had_migraine'] = int(had_migraine)
-                
-                multimodal_rows.append(features)
-        
-        # Create DataFrame
-        if multimodal_rows:
-            multimodal_df = pd.DataFrame(multimodal_rows)
-            print(f"Created multimodal dataset with {len(multimodal_df)} rows and {len(multimodal_df.columns)} columns")
-            return multimodal_df
-        else:
-            print("Warning: No multimodal rows created")
-            return pd.DataFrame()
-            
-            
     def run_full_pipeline(self, 
                         location: Tuple[float, float],
                         start_date: Union[str, datetime],
                         end_date: Union[str, datetime],
                         prediction_horizon: int = 6,
                         window_size: int = 24,
-                        imputation_method: Optional[str] = 'knn',
+                        imputation_method: Optional[str] = 'ffill', # Match default in create_multimodal
                         imputer_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Run the complete data processing pipeline including imputation.
+        This method orchestrates the loading, processing, alignment, and preparation.
         
         Args:
-            location: Location coordinates (latitude, longitude)
-            start_date: Start date for data
-            end_date: End date for data
-            prediction_horizon: Hours ahead to predict migraines
-            window_size: Number of hours to use as input window
-            imputation_method: Method for imputation ('knn', 'iterative', 'none').
-            imputer_config: Configuration dictionary for the imputer.
+            location: Location coordinates (latitude, longitude) for weather.
+            start_date: Start date for data processing range.
+            end_date: End date for data processing range.
+            prediction_horizon: Hours ahead to predict migraines.
+            window_size: Number of hours to use as input window for FuseMOE.
+            imputation_method: Method for imputation ('ffill', or advanced like 'knn' - currently disabled).
+            imputer_config: Configuration dictionary for advanced imputers.
             
         Returns:
             Dictionary with processed data ready for the FuseMOE model
         """
-
-        # Load migraine events
+        logging.info("Running full data pipeline...")
+        # Load migraine events first - needed for target calculation
         self.load_migraine_events()
 
-        # Process each modality
-        self.process_eeg_data()
-        self.process_weather_data(location, start_date, end_date)
-        self.process_sleep_data()
-        self.process_stress_data()
+        # Process individual modalities (Load raw data implicitly within create_multimodal_dataset)
+        # We no longer need to call process_eeg_data, etc. here if create_multimodal handles it.
+        # However, processing weather might still need explicit dates if not loaded from file
+        # Let's assume _load_raw_data handles weather loading for now.
+        # If weather needs fetching based on start/end date, that logic needs integration.
 
-        # Align data (this method might need adjustment depending on requirements)
-        self.align_data_with_migraine_events()
-
-        # Create multimodal dataset
+        # Create multimodal dataset using the refactored method
         multimodal_df = self.create_multimodal_dataset(
-            time_window='1H', # Example time window, adjust as needed
-            prediction_horizon=6, # Reduced from 24 to 6
-            imputation_method=imputation_method,
+            prediction_horizon=prediction_horizon,
+            imputation_method=imputation_method, # Pass along the method
             imputer_config=imputer_config
         )
         
-        if multimodal_df.empty:
-            print("Warning: Multimodal dataset is empty after creation/imputation.")
-            return {'X': [], 'y': [], 'modalities': [], 'features_per_modality': {}}
+        if multimodal_df is None or multimodal_df.empty:
+            logging.error("Multimodal dataset is empty after creation/imputation. Cannot proceed.")
+            return {'X': {}, 'y': np.array([]), 'groups': None, 'modalities': [], 'features_per_modality': {}}
+        
+        logging.info(f"Multimodal dataset successfully created. Shape: {multimodal_df.shape}")
         
         # Prepare data for FuseMOE model
         fusemoe_input_data = self.prepare_data_for_fusemoe(
             multimodal_df=multimodal_df,
-            window_size=window_size
-            # Removed explicit step_size to use the function default (step_size=1)
-            # step_size=window_size // 2  # Example overlap
+            window_size=window_size,
+            # step_size is handled by default in prepare_data_for_fusemoe
+            prediction_horizon=prediction_horizon # Pass horizon if needed
         )
         
+        logging.info("Full data pipeline finished.")
         return fusemoe_input_data

@@ -22,7 +22,7 @@ import seaborn as sns
 import torch
 import json
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset, SubsetRandomSampler
 import torch.nn as nn
 from sklearn.model_selection import train_test_split, StratifiedKFold, KFold, TimeSeriesSplit, GroupKFold, StratifiedGroupKFold
 from sklearn.metrics import (
@@ -35,6 +35,13 @@ import copy # Add copy for deep copying model state during training
 import time # Import time for timing logs if needed
 import subprocess # <<< Added import
 import random # <<< Added import
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from imblearn.over_sampling import SMOTE, RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.pipeline import Pipeline as ImbPipeline # Alias to avoid clash
+from tqdm.auto import tqdm # Import tqdm
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from typing import List, Dict, Optional, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
@@ -1105,11 +1112,12 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
                                                            patience=patience//2, # Reduce LR if no improvement for half the early stopping patience
                                                            factor=0.1, 
-                                                           verbose=True)
+                                                           verbose=False) # Quieten scheduler verbosity
     
     # Initialize best validation loss and patience counter
     best_val_loss = float('inf')
     patience_counter = 0
+    best_model_state = None # Initialize best model state
     
     # Initialize history
     history = {
@@ -1117,14 +1125,31 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
         'val_loss': []
     }
     
-    model.train()
-    for epoch in range(num_epochs):
+    model.to(device) # Ensure model is on the correct device
+    
+    # Move data to device ONCE before the loop
+    train_data_dev = {mod: tensor.to(device) for mod, tensor in train_data_dict.items()}
+    y_train_dev = y_train_tensor.to(device)
+    val_data_dev = {mod: tensor.to(device) for mod, tensor in val_data_dict.items()}
+    y_val_dev = y_val_tensor.to(device)
+
+    # --- Wrap epoch loop with tqdm ---
+    epoch_pbar = tqdm(range(num_epochs), desc="Epochs (Early Stopping)", unit="epoch", leave=False)
+    for epoch in epoch_pbar:
         # Training phase
         model.train()
         epoch_loss = 0
-        for i in range(0, y_train_tensor.shape[0], batch_size):
-            batch_X = {mod: tensor[i:i+batch_size] for mod, tensor in train_data_dict.items()}
-            batch_y = y_train_tensor[i:i+batch_size]
+        processed_batches = 0
+        
+        # --- Wrap batch loop with tqdm ---
+        num_batches = (y_train_dev.shape[0] + batch_size - 1) // batch_size
+        batch_pbar = tqdm(range(num_batches), desc=f"Epoch {epoch+1}/{num_epochs} Train", unit="batch", leave=False)
+        for i in batch_pbar:
+            start_idx = i * batch_size
+            end_idx = start_idx + batch_size
+            
+            batch_X = {mod: tensor[start_idx:end_idx] for mod, tensor in train_data_dev.items()}
+            batch_y = y_train_dev[start_idx:end_idx]
             
             optimizer.zero_grad()
             outputs, _ = model(batch_X)
@@ -1133,24 +1158,29 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
             optimizer.step()
             
             epoch_loss += loss.item() * batch_y.shape[0]
+            processed_batches += batch_y.shape[0]
+            
+            # Update batch progress bar postfix
+            if processed_batches > 0:
+                 batch_pbar.set_postfix({'Running Loss': f'{epoch_loss / processed_batches:.4f}'})
         
-        avg_train_loss = epoch_loss / y_train_tensor.shape[0]
+        avg_train_loss = epoch_loss / y_train_dev.shape[0]
         history['train_loss'].append(avg_train_loss)
         
         # Validation phase
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            val_outputs, _ = model(val_data_dict)
-            val_loss = weighted_bce_loss(val_outputs, y_val_tensor, pos_weight=pos_weight).item()
+            val_outputs, _ = model(val_data_dev)
+            val_loss = weighted_bce_loss(val_outputs, y_val_dev, pos_weight=pos_weight).item()
             history['val_loss'].append(val_loss)
         
         # --- Step the LR scheduler --- #
         scheduler.step(val_loss)
         # --------------------------- #
         
-        # Print progress
-        logging.info(f"Epoch [{epoch+1}/{num_epochs}] Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        # Update epoch progress bar postfix
+        epoch_pbar.set_postfix({'Train Loss': f'{avg_train_loss:.4f}', 'Val Loss': f'{val_loss:.4f}'})
         
         # Early stopping check
         if val_loss < best_val_loss:
@@ -1165,9 +1195,22 @@ def train_with_early_stopping(model, train_data_dict, y_train_tensor, val_data_d
             if patience_counter >= patience and epoch > 2:  # Ensure we train for at least 3 epochs
                 logging.info(f"Early stopping triggered at epoch {epoch+1}. Best Val Loss: {best_val_loss:.4f}")
                 # Restore best model
-                model.load_state_dict(best_model_state)
-                break
+                if best_model_state:
+                    model.load_state_dict(best_model_state)
+                epoch_pbar.close() # Close the epoch progress bar
+                break # Exit epoch loop
     
+    if not epoch_pbar.disable: # Ensure progress bar is closed if loop finished normally
+        epoch_pbar.close()
+        
+    # Load best model state if early stopping happened and state was saved
+    if best_model_state and patience_counter >= patience:
+         model.load_state_dict(best_model_state)
+         logging.info("Loaded best model state due to early stopping.")
+    elif best_model_state: # If loop finished normally, ensure best state is loaded
+         model.load_state_dict(best_model_state)
+         logging.info("Loaded best model state from training.")
+
     return model, history
 
 

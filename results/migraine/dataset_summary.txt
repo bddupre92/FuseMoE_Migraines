@@ -7,12 +7,12 @@ Available modalities: eeg, sleep, stress, weather
 
 Features per modality:
   - eeg: 6 features
-  - sleep: 24 features
-  - stress: 14 features
-  - weather: 19 features
+  - sleep: 7 features
+  - stress: 1 features
+  - weather: 5 features
 
-Positive rate (migraine events): 32.93%
+Positive rate (migraine events): 1.42%
 
 Class distribution:
-  - Class 0: 933 samples (67.07%)
-  - Class 1: 458 samples (32.93%)
+  - Class 0: 711211 samples (98.58%)
+  - Class 1: 10272 samples (1.42%)
